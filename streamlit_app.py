@@ -679,9 +679,9 @@ def fig_vessel_categories(sar_raw, pw_df, date_range):
         ), row=2, col=2)
         fig.update_yaxes(title_text="Dark vessel %", range=[0,100], row=2, col=2)
 
-    _add_events(fig, date_range, row=1, col=1, y_frac=0.88)
-    _add_events(fig, date_range, row=1, col=2, y_frac=0.88)
-    _add_events(fig, date_range, row=2, col=2, y_frac=0.88)
+    _add_events(fig, date_range, row=1, col=1)
+    _add_events(fig, date_range, row=1, col=2)
+    _add_events(fig, date_range, row=2, col=2)
     fig.update_layout(template="plotly_white", height=700,
                       barmode="stack",
                       title="Vessel Category Breakdown — GFW SAR × PortWatch Cross-validation")
@@ -733,7 +733,7 @@ def fig_dark_analysis(sar_df, gaps_df, enc_df, date_range):
         fig.add_annotation(text="Encounters data unavailable", x=0.5, y=0.1,
                            xref="paper", yref="paper", showarrow=False)
 
-    _add_events(fig, date_range, row=1, col=1, y_frac=0.95)
+    _add_events(fig, date_range, row=1, col=1)
     fig.update_layout(template="plotly_white", height=600, barmode="stack",
                       title="Dark Vessel Analysis — GFW Sentinel-1 · GAPs · Encounters",
                       legend=dict(orientation="h", yanchor="bottom", y=1.02))
@@ -755,7 +755,7 @@ def fig_commodity(price_df, date_range):
     fig.add_trace(go.Scatter(x=d["date"], y=d["wheat_usdmt"],
                               name="Wheat global (USD/mt)", line=dict(color=PAL["wheat"],width=2.0,dash="dashdot"),
                               hovertemplate="Wheat: $%{y:,.0f}<extra></extra>"), secondary_y=True)
-    _add_events(fig, date_range, y_frac=0.92)
+    _add_events(fig, date_range)
     fig.update_yaxes(title_text="Fertilizer price (USD/mt)", secondary_y=False)
     fig.update_yaxes(title_text="Wheat price (USD/mt)", secondary_y=True)
     fig.update_layout(template="plotly_white", height=420,
