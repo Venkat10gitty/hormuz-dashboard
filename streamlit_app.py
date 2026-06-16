@@ -531,15 +531,16 @@ def fig_transit(df, baseline, drop_pct, src, date_range):
     fig.add_trace(go.Scatter(
         x=d["date"], y=d["transit_vessels"],
         mode="lines", line=dict(color=PAL["hormuz"], width=2),
-        name="Transit vessels/day", hovertemplate="%{x|%b %d}: %{y:.0f} vessels<extra></extra>",
+        name="AIS transits/day — interpolated between anchors",
+        hovertemplate="%{x|%b %d}: %{y:.0f} vessels<extra></extra>",
     ))
     obs = d[d["is_observed"]]
     fig.add_trace(go.Scatter(
         x=obs["date"], y=obs["transit_vessels"],
         mode="markers", marker=dict(color=PAL["hormuz"], size=6,
                                      line=dict(color="white", width=1)),
-        name="Observed (Windward/PortWatch)",
-        hovertemplate="%{x|%b %d}: %{y:.0f} vessels<extra></extra>",
+        name="Observed anchor (Windward AI / PortWatch)",
+        hovertemplate="%{x|%b %d}: %{y:.0f} vessels (observed)<extra></extra>",
     ))
     fig.add_hline(y=baseline, line_dash="dot", line_color=PAL["baseline"],
                   annotation_text=f"Baseline: {baseline:.0f}/day",
@@ -938,6 +939,7 @@ with tab1:
         fig_transit(transit_df, baseline_mean, drop_pct, transit_src, date_range),
         use_container_width=True,
     )
+    st.caption(EVENT_SOURCES)
     with st.expander("Data provenance"):
         st.write(f"**Primary:** {transit_src}")
         st.write("**Supplement:** Windward AI daily reports (windward.ai/blog/) — interpolated between anchors")
@@ -1001,6 +1003,7 @@ with tab3:
         fig_dark_analysis(sar_daily, gaps_df, enc_df, date_range),
         use_container_width=True,
     )
+    st.caption(EVENT_SOURCES)
 
     with st.expander("Data provenance"):
         st.write("**SAR:** GFW 4Wings v3.0 — Sentinel-1 vessel-level detections")
@@ -1025,7 +1028,7 @@ with tab4:
               f"+{(urea_now-urea_pre)/urea_pre*100:.0f}% since crisis")
     c2.metric("Wheat (global)", f"${wheat_now:,.0f}/mt",
               f"+{(wheat_now-wheat_pre)/wheat_pre*100:.0f}% since crisis")
-    c3.metric("Fertilizer transit", "~30% global seaborne", "via Hormuz pre-crisis")
+    c3.metric("Fertilizer transit", "~30%", "global seaborne via Hormuz")
 
     st.plotly_chart(fig_commodity(price_df, date_range), use_container_width=True)
 
@@ -1064,15 +1067,9 @@ with tab6:
     st.subheader("Davenport (2008) Evasion Taxonomy → GFW Data Streams")
     st.caption("Every category is linked to a specific GFW endpoint and observable metric")
 
-    st.dataframe(
-        DAVENPORT_TABLE.style.apply(
-            lambda row: ["background-color:#FFF5F5; font-weight:bold"
-                         if "NEW" in str(row["Davenport Category"])
-                         else "" for _ in row],
-            axis=1
-        ),
-        use_container_width=True,
-    )
+    st.table(DAVENPORT_TABLE)
+    st.info("★ **SELF-DETERRENCE (NEW)** — last row — is a novel Hormuz 2026 category "
+            "not present in Davenport (2008): declared-open strait with zero actual transits (Apr 17).")
 
     st.divider()
     st.subheader("Five Key Science Arguments")
