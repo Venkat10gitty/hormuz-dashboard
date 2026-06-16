@@ -38,13 +38,23 @@ US_BLOCKADE    = pd.Timestamp("2026-04-13")
 IRAN_RECLOSE   = pd.Timestamp("2026-04-18")
 ANALYSIS_START = pd.Timestamp("2025-10-01")
 
+# (date, label, color, y_paper) — staggered so close pairs don't overprint
 CRISIS_EVENTS = [
-    ("2026-02-28", "Feb 28<br>Epic Fury",   "#9B2226"),
-    ("2026-03-02", "Mar 2<br>IRGC Closure", "#C1121F"),
-    ("2026-03-26", "Mar 26<br>Neutral OK",  "#2A9D8F"),
-    ("2026-04-13", "Apr 13<br>US Blockade", "#9B2226"),
-    ("2026-04-18", "Apr 18<br>Re-closes",   "#C1121F"),
+    ("2026-02-28", "Feb 28<br><i>Operation Epic Fury</i>", "#9B2226", 0.92),
+    ("2026-03-02", "Mar 2<br><i>IRGC Closure</i>",         "#C1121F", 0.70),
+    ("2026-03-26", "Mar 26<br><i>Neutral ships</i>",       "#2A9D8F", 0.92),
+    ("2026-04-13", "Apr 13<br><i>US Blockade</i>",         "#9B2226", 0.92),
+    ("2026-04-18", "Apr 18<br><i>Iran re-closes</i>",      "#C1121F", 0.70),
 ]
+
+EVENT_SOURCES = (
+    "Event sources: "
+    "Feb 28 — US DoD / Windward AI Mar-01 report (observed) · "
+    "Mar 2 — IRGC official statement / AP wire (observed) · "
+    "Mar 26 — Iranian MFA announcement (observed) · "
+    "Apr 13 — USN Fifth Fleet / NY Post (observed) · "
+    "Apr 18 — IRNA / Reuters (observed)"
+)
 
 BBOXES = {
     "Hormuz Strait": {"min_lat":25.5,"max_lat":27.0,"min_lon":55.5,"max_lon":58.5,"name":"Strait of Hormuz"},
@@ -72,6 +82,7 @@ PAL = {
 }
 
 WINDWARD_ANCHORS = {
+    "2025-10-01":(108,0),"2026-01-01":(111,0),"2026-02-01":(113,0),
     "2026-02-27":(113,0),"2026-02-28":(72,0),"2026-03-01":(38,0),
     "2026-03-02":(15,0),"2026-03-03":(8,0),"2026-03-04":(4,0),
     "2026-03-05":(4,0),"2026-03-07":(3,1),"2026-03-08":(2,1),
@@ -490,11 +501,11 @@ def get_historical_transit(chokepoint: str, start: str, end: str):
 # CHART HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _add_events(fig, date_range=None, row=None, col=None, y_frac=0.92):
+def _add_events(fig, date_range=None, row=None, col=None):
     kw = {}
     if row: kw["row"] = row
     if col: kw["col"] = col
-    for ds, label, color in CRISIS_EVENTS:
+    for ds, label, color, y in CRISIS_EVENTS:
         d = pd.Timestamp(ds)
         if date_range:
             dr0 = pd.Timestamp(str(date_range[0]))
@@ -503,9 +514,10 @@ def _add_events(fig, date_range=None, row=None, col=None, y_frac=0.92):
         fig.add_vline(x=ds, line_dash="dash", line_color=color,
                       line_width=1.5, opacity=0.6, **kw)
         fig.add_annotation(
-            x=ds, yref="paper", y=y_frac,
+            x=ds, yref="paper", y=y,
             text=label, showarrow=False, xanchor="left",
             font=dict(size=9, color=color),
+            bgcolor="rgba(255,255,255,0.75)",
             **({"row": row, "col": col} if row else {})
         )
 
@@ -763,7 +775,7 @@ def fig_historical_comparison(hormuz_df, baseline, drop_pct, hist_data):
     EPISODES = {
         "Black Sea 2022": {"color":"#1D6A96","drop":80,"bypass_cap":100,"bypass_cost":25,"recovery_day":148},
         "Red Sea 2024":   {"color":"#E63946","drop":72,"bypass_cap":100,"bypass_cost":40,"recovery_day":None},
-        "Hormuz 2026":    {"color":PAL["crisis"],"drop":int(drop_pct),"bypass_cap":5,"bypass_cost":300,"recovery_day":None},
+        "Hormuz 2026":    {"color":PAL["crisis"],"drop":int(round(drop_pct)) if pd.notna(drop_pct) else 95,"bypass_cap":5,"bypass_cost":300,"recovery_day":None},
     }
 
     # Panel A: normalized trajectory
@@ -823,7 +835,7 @@ def fig_historical_comparison(hormuz_df, baseline, drop_pct, hist_data):
         "Black Sea 2022": (80, 100, "#1D6A96"),
         "Red Sea 2024":   (72, 100, "#E63946"),
         "Panama 2024":    (38, 95,  "#E9C46A"),
-        "Hormuz 2026":    (int(drop_pct), 5, PAL["crisis"]),
+        "Hormuz 2026":    (int(round(drop_pct)) if pd.notna(drop_pct) else 95, 5, PAL["crisis"]),
     }
     for ep_n, (drop, byp, col) in ALL.items():
         is_this = "Hormuz" in ep_n
@@ -913,13 +925,15 @@ crisis_days   = max((TODAY - CRISIS_START).days, 0)
 pw_data, _    = fetch_portwatch(start_str, end_str)
 portwatch_ok  = pw_data is not None
 
+_drop_str     = f"−{drop_pct:.0f}%"     if pd.notna(drop_pct)     else "N/A"
+_baseline_str = f"{baseline_mean:.0f} /day" if pd.notna(baseline_mean) else "N/A"
 col1, col2, col3, col4, col5 = st.columns(5)
-col1.metric("Transit drop", f"{drop_pct:.0f}%", "from pre-crisis baseline")
-col2.metric("Baseline", f"{baseline_mean:.0f} vessels/day", "pre-Feb 28 average")
-col3.metric("Crisis duration", f"{crisis_days} days", f"since {CRISIS_START.date()}")
-col4.metric("US Blockade", f"{blockade_days} days", f"since {US_BLOCKADE.date()}")
-col5.metric("PortWatch", "✅ Live" if portwatch_ok else "⚠️ Unavailable",
-            f"{len(pw_data)} days" if portwatch_ok else "Using Windward anchors")
+col1.metric("Transit drop",        _drop_str,      "vs pre-crisis baseline")
+col2.metric("Pre-crisis baseline", _baseline_str,  "AIS vessels Oct–Feb")
+col3.metric("Crisis duration",     f"{crisis_days} days",   "since Feb 28")
+col4.metric("US Blockade",         f"{blockade_days} days", "since Apr 13")
+col5.metric("PortWatch",           "✅ Live" if portwatch_ok else "⚠️ Cache",
+            f"{len(pw_data)} days" if portwatch_ok else "Windward anchors")
 
 st.divider()
 
