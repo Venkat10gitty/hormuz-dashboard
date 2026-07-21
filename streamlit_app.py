@@ -1236,7 +1236,7 @@ col5.metric("PortWatch",           "✅ Live" if portwatch_ok else "⚠️ Cache
 st.divider()
 
 # ── tabs ──────────────────────────────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📉 Transit Collapse",
     "🚢 Vessel Categories",
     "👁️ Dark Vessel Analysis",
@@ -1244,6 +1244,7 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📊 Historical Comparison",
     "🗂️ Behavioral Classification",
     "🔬 Research Design",
+    "🌐 Cross-Event Comparison",
 ])
 
 # ── Tab 1: Transit Collapse ───────────────────────────────────────────────────
@@ -1602,4 +1603,120 @@ with tab7:
 - Cross-event generalization (Black Sea 2022, Red Sea 2024 patterns may differ)
 - Causal attribution of price movements to transit disruption
 - Prediction system for future chokepoint disruptions
+""")
+
+# ── Tab 8: Cross-Event Comparison ─────────────────────────────────────────────
+import os as _os
+
+with tab8:
+    st.subheader("Cross-Event Comparison — Hormuz / Red Sea / Black Sea")
+    st.caption(
+        "Descriptive comparison of three major chokepoint disruptions using IMF PortWatch data. "
+        "No forecasting claims. Novel categories assessed per-event with explicit data-gap flags."
+    )
+
+    # Data quality caveat
+    with st.expander("⚠️ Data quality notes (expand before presenting)", expanded=False):
+        st.markdown("""
+| Event | Chokepoint | Signal quality | Mechanism |
+|---|---|---|---|
+| **Hormuz 2026** | chokepoint6 | **Strong** — hard blockade, 100% transit collapse | Direct strait closure |
+| **Red Sea 2023-24** | chokepoint4 (Suez) | **Moderate** — gradual diversion, not blockade | Vessel avoidance; rerouting via Cape |
+| **Black Sea 2022** | chokepoint3 (Turkish Straits) | **Weak** — 25% decline; disruption was at ports, not this chokepoint | Port closure; Bosporus remained open under Montreux Convention |
+
+*PortWatch does not provide flag-state or route-level data. Novel categories requiring those fields are marked DATA GAP.*
+""")
+
+    st.divider()
+
+    # Figure definitions with captions (Puma preference: captions outside figures)
+    CROSS_FIGS = [
+        {
+            "file": "cross_fig1_transit_trajectory.png",
+            "panel": "A",
+            "caption": (
+                "Daily transit counts normalized to 100-day pre-onset baseline, 7-day rolling mean. "
+                "Days since onset on x-axis. Hormuz 2026 shows an immediate hard collapse (drop to 0 within 24 h); "
+                "Red Sea 2023-24 shows a gradual 43-day decline to nadir; "
+                "Black Sea 2022 shows a sharp but partial drop recovering within weeks."
+            ),
+        },
+        {
+            "file": "cross_fig2_regime_prevalence.png",
+            "panel": "B",
+            "caption": (
+                "PELT changepoint-defined regimes plotted as duration (days) vs. mean transit level (% baseline). "
+                "Color encodes severity (RdYlGn). Each bubble is one regime segment. "
+                "Hormuz shows long, severe low-transit regimes; Red Sea shows a staircase of partial recovery; "
+                "Black Sea shows rapid return toward baseline."
+            ),
+        },
+        {
+            "file": "cross_fig3_transition_speed.png",
+            "panel": "C",
+            "caption": (
+                "Left: bar chart of sharpest single PELT transition per event (absolute Δ vessels/day). "
+                "Right: scatter of drop magnitude (% baseline) vs. transition speed, with event labels. "
+                "Hormuz 2026 is an outlier on both axes — faster and deeper than any prior recorded disruption."
+            ),
+        },
+        {
+            "file": "cross_fig4_novel_categories.png",
+            "panel": "D",
+            "caption": (
+                "Novel system-level category matrix. ✓ = identified/computable from available data; "
+                "✗ = not applicable or opposite mechanism; — = DATA GAP (requires flag-state or spatial route data not in PortWatch). "
+                "Self-deterrence is Hormuz-specific. Regime-transition speed is computable for all events."
+            ),
+        },
+        {
+            "file": "cross_fig5_bypass_capacity.png",
+            "panel": "E",
+            "caption": (
+                "Left: scatter of transit drop (% baseline) vs. bypass route capacity (% of pre-crisis volume). "
+                "Right: grouped bar of bypass capacity vs. cost premium (USD/mt). "
+                "Hormuz 2026 has near-zero bypass capacity at 300 USD/mt premium; "
+                "Red Sea and Black Sea had viable (if expensive) rerouting options."
+            ),
+        },
+    ]
+
+    for fig_def in CROSS_FIGS:
+        fpath = _os.path.join(_os.path.dirname(__file__), fig_def["file"])
+        st.markdown(f"**Panel {fig_def['panel']}**")
+        if _os.path.exists(fpath):
+            with open(fpath, "rb") as _fh:
+                img_bytes = _fh.read()
+            st.image(img_bytes, use_container_width=True)
+            st.caption(fig_def["caption"])
+            st.download_button(
+                label=f"Download Panel {fig_def['panel']} (PNG)",
+                data=img_bytes,
+                file_name=fig_def["file"],
+                mime="image/png",
+                key=f"dl_{fig_def['panel']}",
+            )
+        else:
+            st.warning(f"Figure not found: {fig_def['file']}")
+        st.divider()
+
+    # Honest status report
+    st.markdown("### Status Report — What Is and Is Not Ready")
+    col_ready, col_gap = st.columns(2)
+    with col_ready:
+        st.markdown("**✅ Ready for Zoom**")
+        st.markdown("""
+- Normalized trajectory comparison (Panel A) — all 3 events, live PortWatch data
+- PELT regime prevalence (Panel B) — validated against Hormuz crisis dates
+- Transition-speed comparison (Panel C) — Hormuz is clear outlier
+- Novel category matrix (Panel D) — honest ✓/✗/— per event
+- Bypass capacity (Panel E) — uses confirmed values from UNCTAD/World Bank
+""")
+    with col_gap:
+        st.markdown("**— Not available from PortWatch alone**")
+        st.markdown("""
+- Flag-state stratification: requires AIS vessel registry (not in PortWatch API)
+- Corridor topology shift: requires spatial route data (Verschuur's MARIN/FleetMon)
+- Food-segment isolation for Red Sea / Black Sea: PortWatch cargo fields not available for historical events
+- Self-deterrence analog for Red Sea / Black Sea: no clean declared-open moment in either event
 """)
