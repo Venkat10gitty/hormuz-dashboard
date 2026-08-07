@@ -77,6 +77,15 @@ REGIME_DEFS = [
     (ALL_DARK,     None,         6, "All dark",        "rgba(180,20,20,0.18)"),
 ]
 
+# Bounding boxes for GFW/SAR queries.  Three named regions, each with a distinct use:
+#   "Hormuz Strait" — the navigation channel itself (25.5–27.0°N, 55.5–58.5°E).
+#     Matches analysis1_food_segment.py HORMUZ_BBOX exactly; use this for SAR detection
+#     counts and the food-segment dark fraction.  Width chosen to capture both TSS lanes
+#     without including the full Gulf of Oman approach zone.
+#   "Full Region" — wider box (22–27°N, 55.5–60°E) used for GAP events and encounters
+#     where vessels disable AIS before entering the strait (capture zone must be broader).
+#   "Gulf of Oman" — the approach zone south of the strait (22–25.5°N, 56–60°E).
+# Default selection for the sidebar is "Hormuz Strait".
 BBOXES = {
     "Hormuz Strait": {"min_lat":25.5,"max_lat":27.0,"min_lon":55.5,"max_lon":58.5,"name":"Strait of Hormuz"},
     "Full Region":   {"min_lat":22.0,"max_lat":27.0,"min_lon":55.5,"max_lon":60.0,"name":"Full Hormuz region"},
@@ -123,7 +132,7 @@ TAXONOMY_TABLE = pd.DataFrame([
     ["False position / Spoofing", "Davenport #11",                   "Dark tonnage undercount bias",           "SAR–AIS mismatch rate"],
     ["Outside shipping lane",     "Davenport #8",                    "Sanctioned crude evasion index",         "SAR dark fraction (all vessel types)"],
     ["Not heading to port",       "Davenport #12",                   "Self-deterrence corroboration",          "Gulf port calls (PortWatch n_total)"],
-    ["Abnormal stop",             "Riveiro (2008) — Anchoring",      "Port congestion → rerouting signal",     "AIS: avg speed=0 in bbox"],
+    ["Abnormal stop",             "Riveiro (2018) — Anchoring",      "Port congestion → rerouting signal",     "AIS: avg speed=0 in bbox"],
     ["Self-deterrence",           "NEW — no Davenport code",         "Expectational channel isolation",        "Apr 17: declared-open; transits stayed 0"],
 ], columns=["Riveiro Family / Category", "Davenport Mapping", "Aggregate Treatment", "Observable Metric"])
 
@@ -703,7 +712,12 @@ def _add_events(fig, date_range=None, row=None, col=None):
 
 
 def _add_regime_shading(fig, date_range, row=None, col=None, label_y_frac=0.97):
-    """Add PELT-recovered regime color bands as vrect background."""
+    """Add documented event-date regime color bands as vrect background.
+
+    These bands are placed at documented historical dates (e.g. IRGC closure,
+    ceasefire, US blockade) — NOT PELT changepoint output.  PELT is a separate
+    analysis; do not label these bands as changepoint-detected.
+    """
     dr0 = pd.Timestamp(str(date_range[0]))
     dr1 = pd.Timestamp(str(date_range[1]))
     kw = {}
@@ -1363,7 +1377,7 @@ with tab1:
     c_left, c_right = st.columns([3, 1])
     with c_right:
         show_regimes = st.checkbox("Show regime shading", value=True,
-                                   help="Color bands = PELT-recovered crisis regimes")
+                                   help="Color bands = documented event dates (not PELT changepoint output)")
         show_food    = st.checkbox("Overlay food segment", value=False,
                                    help="Add dry bulk + tanker lines from PortWatch")
 
@@ -1665,7 +1679,11 @@ with tab7:
 
     # Four novel system-level categories
     st.markdown("### Four Novel System-Level Categories")
-    st.caption("Individual-vessel evasion taxonomies (Davenport 2008, Riveiro 2008) have no equivalents for these fleet-level phenomena")
+    st.caption(
+        "Riveiro (2018) provides the five-category organising framework for vessel behaviour anomalies; "
+        "Davenport (2008) provides the kinematic sub-scheme (16 codes) that sits within it. "
+        "Neither has equivalents for the fleet-level phenomena listed here."
+    )
     for _, row in NOVEL_CATEGORIES.iterrows():
         with st.expander(f"**{row['Category']}**"):
             col1, col2 = st.columns(2)
