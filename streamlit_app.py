@@ -174,28 +174,18 @@ def _cset(k, v):
     except: pass
 
 # ── API keys ──────────────────────────────────────────────────────────────────
+# GFW token must be set in Streamlit secrets (key: GFW_API_KEY) or the
+# GFW_API_KEY environment variable.  No embedded fallback — if unconfigured
+# the app shows an explicit warning rather than silently using a stale key.
 def _secret(key, default=""):
     try:
         return st.secrets.get(key, None) or os.getenv(key, default)
     except Exception:
         return os.getenv(key, default)
 
-_GFW_FALLBACK = (
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-    "REVOKED"
-)
-GFW_API_KEY  = _secret("GFW_API_KEY", _GFW_FALLBACK)
+GFW_API_KEY  = _secret("GFW_API_KEY", "")
 FRED_KEY     = _secret("FRED_API_KEY", "")
+GFW_CONFIGURED = bool(GFW_API_KEY)
 GFW_HEADERS  = {"Authorization": f"Bearer {GFW_API_KEY}", "Content-Type": "application/json"}
 HTTP_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; Columbia-PumaLab/3.0; sb5206@columbia.edu)"}
 
@@ -339,11 +329,107 @@ def get_transit_data(start: str, end: str):
     return df, baseline, drop_pct, src
 
 
+def _fetch_wb_pink_sheet_urea(start: str, end: str):
+    """Fetch urea monthly prices from the World Bank Commodity Markets Pink Sheet.
+
+    Scrapes the commodity-markets page to obtain the current monthly XLSX URL
+    (the URL changes with each release).  Returns a daily-interpolated pd.Series
+    on success, raises RuntimeError with a descriptive message on failure.
+    Urea column: 'Urea ($/mt)' — Middle East f.o.b. spot.
+    Source: World Bank Commodity Markets Outlook (CMO) — 'Monthly Prices' sheet.
+    """
+    import io, re, urllib.request, openpyxl
+
+    agent = "Mozilla/5.0 (compatible; Columbia-PumaLab/3.0; sb5206@columbia.edu)"
+
+    # Step 1: find the current XLSX URL from the landing page
+    page_url = "https://www.worldbank.org/en/research/commodity-markets"
+    req = urllib.request.Request(page_url, headers={"User-Agent": agent})
+    try:
+        html = urllib.request.urlopen(req, timeout=20).read().decode("utf-8", errors="ignore")
+    except Exception as exc:
+        raise RuntimeError(
+            f"Could not reach World Bank commodity-markets page: {exc}"
+        ) from exc
+
+    matches = re.findall(
+        r"(https://thedocs\.worldbank\.org[^\"'>\\s]+CMO-Historical-Data-Monthly\.xlsx)",
+        html,
+    )
+    if not matches:
+        raise RuntimeError(
+            "World Bank page loaded but Pink Sheet XLSX link was not found. "
+            "The page layout may have changed."
+        )
+    xlsx_url = matches[0]
+
+    # Step 2: download the XLSX
+    req2 = urllib.request.Request(xlsx_url, headers={"User-Agent": agent})
+    try:
+        raw = urllib.request.urlopen(req2, timeout=60).read()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Pink Sheet URL found ({xlsx_url[:80]}…) but download failed: {exc}"
+        ) from exc
+
+    # Step 3: parse the 'Monthly Prices' sheet — urea is column index 60 (col 61)
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True)
+        ws = wb["Monthly Prices"]
+        rows = list(ws.iter_rows(values_only=True))
+    except Exception as exc:
+        raise RuntimeError(f"Could not parse Pink Sheet XLSX: {exc}") from exc
+
+    # Confirm header row (row 5, index 4): column 60 should be 'Urea' or 'Urea '
+    header_row = rows[4]
+    urea_col = None
+    for i, cell in enumerate(header_row):
+        if cell and "urea" in str(cell).lower():
+            urea_col = i
+            break
+    if urea_col is None:
+        raise RuntimeError(
+            "Pink Sheet parsed but 'Urea' column not found in header row. "
+            "Column layout may have changed."
+        )
+
+    date_vals, urea_vals = [], []
+    for row in rows[6:]:  # data starts at row 7 (index 6)
+        date_str = row[0]
+        val      = row[urea_col]
+        if date_str and isinstance(date_str, str) and "M" in date_str and val is not None:
+            try:
+                yr, mo = date_str.split("M")
+                date_vals.append(pd.Timestamp(f"{yr}-{mo}-01"))
+                urea_vals.append(float(val))
+            except (ValueError, TypeError):
+                pass
+
+    if len(date_vals) < 12:
+        raise RuntimeError(
+            f"Pink Sheet parsed but only {len(date_vals)} urea observations found (expected 700+)."
+        )
+
+    monthly = pd.Series(urea_vals, index=pd.DatetimeIndex(date_vals)).sort_index()
+
+    # Step 4: daily interpolation over requested window (matches wheat pattern)
+    req_dates = pd.date_range(start, end, freq="D")
+    all_idx   = monthly.index.union(req_dates)
+    daily     = monthly.reindex(all_idx).interpolate("time").reindex(req_dates)
+
+    return daily, xlsx_url
+
+
 @st.cache_data(ttl=43200, show_spinner=False)
 def get_prices(start: str, end: str):
     dates = pd.date_range(start, end, freq="D")
     wheat_daily = None
+    wheat_src   = None
+    urea_daily  = None
+    urea_src    = None
+    urea_err    = None
 
+    # ── Wheat: FRED PWHEAMTUSDM (World Bank via FRED) ────────────────────────
     if FRED_KEY and FREDAPI_OK:
         try:
             fred = Fred(api_key=FRED_KEY)
@@ -367,16 +453,34 @@ def get_prices(start: str, end: str):
         }
         s = pd.Series(wa)
         wheat_daily = s.reindex(s.index.union(dates)).interpolate("time").reindex(dates)
-        wheat_src   = "World Bank GEM calibrated anchors (+31% documented, FRED unavailable)"
+        wheat_src   = "⚠️ FRED unavailable — World Bank GEM calibrated anchors (FRED key not set)"
 
-    # Brent via yfinance
+    # ── Urea: World Bank Pink Sheet (CMO Monthly Prices, Middle East f.o.b.) ─
+    try:
+        urea_daily, xlsx_url = _fetch_wb_pink_sheet_urea(start, end)
+        short_url = xlsx_url.split("/related/")[0].split("/doc/")[1][:20] + "…"
+        urea_src  = (
+            f"World Bank Commodity Markets Pink Sheet — Urea ($/mt) Middle East f.o.b. "
+            f"(CMO-Historical-Data-Monthly.xlsx, doc {short_url})"
+        )
+        print(f"[prices] Urea: World Bank Pink Sheet OK — "
+              f"last obs {urea_daily.dropna().index[-1].date()} = "
+              f"${urea_daily.dropna().iloc[-1]:.1f}/mt")
+    except RuntimeError as exc:
+        urea_err   = str(exc)
+        urea_daily = None
+        urea_src   = None
+        print(f"[prices] ERROR fetching urea from Pink Sheet: {exc}")
+
+    # ── Brent: yfinance ───────────────────────────────────────────────────────
     brent_daily = None
     if YFINANCE_OK:
         try:
             brent_raw = yf.download("BZ=F", start=start, end=end, progress=False)
             if brent_raw is not None and len(brent_raw) > 10:
                 brent_s = (brent_raw["Close"].squeeze()
-                           .reindex(pd.date_range(brent_raw.index.min(), brent_raw.index.max(), freq="D"))
+                           .reindex(pd.date_range(brent_raw.index.min(),
+                                                  brent_raw.index.max(), freq="D"))
                            .interpolate("time"))
                 brent_daily = brent_s.reindex(dates).interpolate("time")
         except Exception:
@@ -394,26 +498,14 @@ def get_prices(start: str, end: str):
         sb = pd.Series(ba)
         brent_daily = sb.reindex(sb.index.union(dates)).interpolate("time").reindex(dates)
 
-    ua = {
-        pd.Timestamp("2025-10-01"):415, pd.Timestamp("2026-01-01"):448,
-        pd.Timestamp("2026-02-01"):460, pd.Timestamp("2026-02-27"):472,
-        pd.Timestamp("2026-03-02"):530, pd.Timestamp("2026-03-09"):640,
-        pd.Timestamp("2026-03-15"):665, pd.Timestamp("2026-04-08"):665,
-        pd.Timestamp("2026-04-13"):730,
-    }
-    su = pd.Series(ua)
-    urea_daily = su.reindex(su.index.union(dates)).interpolate("time").reindex(dates)
-    nola_daily = urea_daily * 1.09
-    nola_daily[dates >= INSURANCE_END] *= 1.06
-
     df = pd.DataFrame({
-        "date": dates,
-        "urea_usdmt":  urea_daily.values,
-        "nola_usdmt":  nola_daily.values,
+        "date":        dates,
+        "urea_usdmt":  urea_daily.values if urea_daily is not None else np.nan,
         "wheat_usdmt": wheat_daily.values,
         "brent_usd":   brent_daily.values,
     })
-    return df, wheat_src, "CSIS/CNBC/Carnegie/Oxford Economics (documented anchors)"
+    # urea_err is passed back so the UI can display a visible banner if needed
+    return df, wheat_src, urea_src, urea_err
 
 
 # ── GFW helpers ───────────────────────────────────────────────────────────────
@@ -1051,12 +1143,22 @@ def fig_commodity(price_df, date_range):
     d = price_df[mask]
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(go.Scatter(x=d["date"], y=d["urea_usdmt"],
-                              name="Urea global (USD/mt)", line=dict(color=PAL["fert"],width=2.5),
-                              hovertemplate="Urea: $%{y:,.0f}<extra></extra>"), secondary_y=False)
-    fig.add_trace(go.Scatter(x=d["date"], y=d["nola_usdmt"],
-                              name="Urea NOLA (USD/mt)", line=dict(color=PAL["crisis"],width=1.8,dash="dash"),
-                              hovertemplate="NOLA: $%{y:,.0f}<extra></extra>"), secondary_y=False)
+    # Urea: World Bank Pink Sheet — Middle East f.o.b. spot (real external source)
+    # NOLA derived series removed per research plan review; no independent NOLA source available.
+    urea_col = d["urea_usdmt"] if "urea_usdmt" in d.columns else None
+    if urea_col is not None and urea_col.notna().any():
+        fig.add_trace(go.Scatter(
+            x=d["date"], y=urea_col,
+            name="Urea — Middle East f.o.b. (USD/mt)",
+            line=dict(color=PAL["fert"], width=2.5),
+            hovertemplate="Urea (WB Pink Sheet): $%{y:,.0f}/mt<extra></extra>",
+        ), secondary_y=False)
+    else:
+        fig.add_annotation(
+            text="⚠️ Urea data unavailable — World Bank Pink Sheet could not be reached",
+            xref="paper", yref="paper", x=0.5, y=0.5,
+            showarrow=False, font=dict(size=13, color="red"),
+        )
     fig.add_trace(go.Scatter(x=d["date"], y=d["wheat_usdmt"],
                               name="Wheat global (USD/mt)", line=dict(color=PAL["wheat"],width=2.0,dash="dashdot"),
                               hovertemplate="Wheat: $%{y:,.0f}<extra></extra>"), secondary_y=True)
@@ -1203,6 +1305,15 @@ with st.sidebar:
     st.caption(f"Last render: {last_render}")
     st.caption("Cache TTL: 12 hours · click Refresh to force re-pull")
 
+    if not GFW_CONFIGURED:
+        st.divider()
+        st.error(
+            "⚠️ **GFW API key not configured.**\n\n"
+            "SAR vessel detection and GAP event panels will show no data.\n"
+            "Set `GFW_API_KEY` in Streamlit Secrets or the environment.",
+            icon="🔑",
+        )
+
     st.divider()
     st.subheader("Share this dashboard")
     st.code("https://hormuz-analysis.streamlit.app", language=None)
@@ -1268,7 +1379,7 @@ with tab1:
     # April 17 decomposition section
     with st.expander("Apr 17 Identification Window — Physical vs Expectational Decomposition", expanded=False):
         with st.spinner("Computing decomposition..."):
-            price_df_decomp, _, _ = get_prices(ANALYSIS_START.strftime("%Y-%m-%d"), end_str)
+            price_df_decomp, _, _, _ = get_prices(ANALYSIS_START.strftime("%Y-%m-%d"), end_str)
         st.plotly_chart(
             fig_april17_decomp(transit_df, price_df_decomp, baseline_mean, date_range),
             use_container_width=True,
@@ -1372,29 +1483,58 @@ with tab3:
 # ── Tab 4: Commodity Cascade ──────────────────────────────────────────────────
 with tab4:
     with st.spinner("Loading price data..."):
-        price_df, wheat_src, urea_src = get_prices(
+        price_df, wheat_src, urea_src, urea_err = get_prices(
             ANALYSIS_START.strftime("%Y-%m-%d"), end_str
         )
 
-    urea_pre  = float(price_df[price_df["date"] < CRISIS_START]["urea_usdmt"].mean())
-    urea_now  = float(price_df.iloc[-1]["urea_usdmt"])
+    # Visible banner if urea data could not be fetched — no silent fallback
+    if urea_err:
+        st.error(
+            f"⚠️ **Urea price data unavailable.** World Bank Pink Sheet could not be fetched.\n\n"
+            f"Error: {urea_err}\n\n"
+            "The urea price panel will be blank. Check network access to worldbank.org.",
+            icon="📊",
+        )
+
+    urea_col  = price_df["urea_usdmt"] if "urea_usdmt" in price_df.columns else None
+    urea_ok   = urea_col is not None and urea_col.notna().any()
+    urea_pre  = float(price_df[price_df["date"] < CRISIS_START]["urea_usdmt"].mean()) if urea_ok else float("nan")
+    urea_now  = float(price_df.iloc[-1]["urea_usdmt"]) if urea_ok else float("nan")
     wheat_pre = float(price_df[price_df["date"] < CRISIS_START]["wheat_usdmt"].mean())
     wheat_now = float(price_df.iloc[-1]["wheat_usdmt"])
 
     c1, c2, c3 = st.columns(3)
-    c1.metric("Urea (global)", f"${urea_now:,.0f}/mt",
-              f"+{(urea_now-urea_pre)/urea_pre*100:.0f}% since crisis")
+    if urea_ok and not (np.isnan(urea_pre) or np.isnan(urea_now)):
+        c1.metric("Urea — Middle East f.o.b. (WB)", f"${urea_now:,.0f}/mt",
+                  f"{(urea_now-urea_pre)/urea_pre*100:+.0f}% since crisis")
+    else:
+        c1.metric("Urea (WB Pink Sheet)", "unavailable", "check network/error above")
     c2.metric("Wheat (global)", f"${wheat_now:,.0f}/mt",
-              f"+{(wheat_now-wheat_pre)/wheat_pre*100:.0f}% since crisis")
-    c3.metric("Fertilizer transit", "~30%", "global seaborne via Hormuz")
+              f"{(wheat_now-wheat_pre)/wheat_pre*100:+.0f}% since crisis")
+    # Fertilizer statistic: 36% traded urea + 29% ammonia — IFPRI, cited in
+    # Nasari et al. 2026 Nature Medicine (Fanzo senior author).
+    c3.metric("Urea transit share", "36%",
+              "of globally traded urea (IFPRI; Nasari et al. 2026 Nature Med.)")
 
     st.plotly_chart(fig_commodity(price_df, date_range), use_container_width=True)
     st.caption(EVENT_SOURCES)
+    st.caption(
+        "Urea: Middle East f.o.b. spot price — World Bank Commodity Markets Pink Sheet "
+        "(CMO-Historical-Data-Monthly.xlsx), monthly, daily-interpolated. "
+        "Source: Nasari et al. (2026) *Nature Medicine* and IFPRI: the Strait carries 36% of globally traded urea "
+        "and 29% of globally traded ammonia. "
+        "No NOLA series shown — no independent source for US Gulf premium available."
+    )
 
     with st.expander("Data provenance"):
         st.write(f"**Wheat:** {wheat_src}")
-        st.write(f"**Urea/NOLA:** {urea_src}")
-        st.write("**Note:** NOLA (New Orleans) premium = global + 9% transport + 6% insurance post-Lloyd's exit (Mar 5)")
+        if urea_src:
+            st.write(f"**Urea:** {urea_src}")
+        else:
+            st.error(f"**Urea:** UNAVAILABLE — {urea_err}")
+        st.write("**Fertilizer statistic:** 36% traded urea, 29% ammonia — IFPRI; "
+                 "cited in Nasari et al. (2026) *Nature Medicine*, DOI pending. "
+                 "Do not cite secondary coverage; use IFPRI primary source.")
 
 # ── Tab 5: Historical Comparison ──────────────────────────────────────────────
 with tab5:
@@ -1433,10 +1573,10 @@ with tab6:
     st.divider()
     st.subheader("Five Key Science Arguments")
     st.markdown("""
-1. **Perfect experiment** — complete Hormuz blockade is now live ground truth; modelers called it unrealistic.
-2. **CH-MAT 2017 bypass fails** — flag-state discrimination (China/India/Pakistan toll-based, Western carriers blocked).
+1. **Observational ground truth** — complete Hormuz blockade is now live data against which prior simulation scenarios (CSH/Verschuur) can be assessed.
+2. **Flag-state divergence** — commercial intelligence reports divergent behaviour by Chinese-flagged vs. Western carriers (cited observation, not original finding).
 3. **No bypass asymmetry** — Persian Gulf food importers are trapped; Omani ports = ~5% alternative capacity.
-4. **Fertilizer transmission** — ~30% of global seaborne fertilizer transits Hormuz; spring planting window collision.
+4. **Fertilizer transmission** — the strait carries **36% of globally traded urea and 29% of ammonia** (IFPRI; cited in Nasari et al. 2026 *Nature Medicine*); feedstocks collapsed harder than grain, spring planting window already closing.
 5. **BSGI precedent** — Black Sea Grain Initiative (Day 148) as the model for a Hormuz Transit Initiative.
 """)
 
@@ -1579,8 +1719,8 @@ with tab7:
             st.success("yfinance live — BZ=F (Brent)")
         else:
             st.info("Brent: hardcoded anchors")
-        st.caption("Urea: CSIS/Carnegie/Oxford Economics")
-        st.caption("NOLA premium: +9% transport +6% post-Lloyd's exit (Mar 5)")
+        st.caption("Urea: World Bank Pink Sheet — Middle East f.o.b. spot (CMO monthly XLSX, live)")
+        st.caption("Fertilizer share: 36% traded urea, 29% ammonia (IFPRI; Nasari et al. 2026 Nat. Med.)")
 
     st.divider()
 
