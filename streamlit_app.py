@@ -1062,93 +1062,193 @@ def fig_dark_analysis(sar_df, gaps_df, enc_df, date_range, sar_raw=None):
 
 
 def fig_april17_decomp(transit_df, price_df, baseline, date_range):
-    """Physical vs expectational decomposition around the Apr 17 identification window."""
+    """Physical vs expectational decomposition — two-panel figure.
+
+    Panel A (primary): 1-day calibration on April 17 only.
+      Identifying assumption: Iran declared strait open on Apr 17; any remaining
+      transit loss on that day is purely expectational (physical barrier = 0).
+      g() is estimated as a slope through the origin:
+        beta = transit_loss(Apr17) / brent_spread(Apr17)
+        alpha = 0  (no expectational loss when Brent is at pre-crisis level)
+      One observation, zero degrees of freedom — no OLS. Transparent single-point
+      calibration.
+
+    Panel B (sensitivity): 6-day OLS over April 17–22.
+      April 18 (Iran re-closes, 20 vessels transited) is inside this window and
+      is the dominant outlier — it drives OLS beta negative (-2.0), which is
+      economically nonsensical. Shown here to make the outlier's effect visible,
+      not as an alternative estimate to use.
+
+    All observations in the window are real PortWatch data (is_observed=True),
+    confirmed by live pull.
+    """
     mask = (transit_df["date"] >= CRISIS_START) & \
            (transit_df["date"] <= pd.Timestamp(str(date_range[1])))
     d = transit_df[mask].copy()
     d["transit_loss"] = (baseline - d["transit_vessels"].clip(upper=baseline)).clip(lower=0)
 
-    # Merge Brent for war-risk proxy
-    d = d.merge(price_df[["date","brent_usd","urea_usdmt"]], on="date", how="left")
+    # Merge Brent spread (war-risk proxy)
+    price_cols = [c for c in ["date","brent_usd","urea_usdmt"] if c in price_df.columns]
+    d = d.merge(price_df[price_cols], on="date", how="left")
     brent_pre = float(price_df[price_df["date"] < CRISIS_START]["brent_usd"].mean())
     d["brent_spread"] = (d["brent_usd"] - brent_pre).clip(lower=0)
 
-    # Calibrate g() on Apr 17–22 window:
-    # In that window, Iran declared strait open → physical disruption ≈ 0
-    # All remaining transit loss is purely expectational
-    calib = d[(d["date"] >= IRAN_REOPEN) & (d["date"] <= pd.Timestamp("2026-04-22"))].dropna(
-        subset=["transit_loss","brent_spread"])
+    # ── CALIBRATION A: 1-day (April 17 only) ─────────────────────────────────
+    apr17_row = d[d["date"] == IRAN_REOPEN].dropna(subset=["transit_loss","brent_spread"])
+    calib_1d_ok = len(apr17_row) == 1
 
-    if len(calib) >= 3:
-        x = calib["brent_spread"].values
-        y = calib["transit_loss"].values
-        x_mean, y_mean = x.mean(), y.mean()
-        beta = float(np.cov(x, y)[0,1] / (np.var(x) + 1e-9))
-        alpha = y_mean - beta * x_mean
-        d["expectational"] = (alpha + beta * d["brent_spread"].fillna(0)).clip(0, baseline)
-        d["physical"] = (d["transit_loss"] - d["expectational"]).clip(lower=0)
-        # Renormalize so they sum to transit_loss
-        total = d["expectational"] + d["physical"]
+    if calib_1d_ok:
+        apr17_loss  = float(apr17_row["transit_loss"].iloc[0])
+        apr17_brent = float(apr17_row["brent_spread"].iloc[0])
+        # Slope through origin: all Apr17 loss is expectational by assumption
+        beta_1d  = apr17_loss / max(apr17_brent, 1e-9)
+        alpha_1d = 0.0
+        d["exp_1d"] = (alpha_1d + beta_1d * d["brent_spread"].fillna(0)).clip(0, baseline)
+        d["phy_1d"] = (d["transit_loss"] - d["exp_1d"]).clip(lower=0)
+        total = d["exp_1d"] + d["phy_1d"]
         scale = d["transit_loss"] / total.replace(0, np.nan)
-        d["expectational"] = (d["expectational"] * scale).fillna(d["transit_loss"])
-        d["physical"]      = (d["physical"]      * scale).fillna(0)
-        calib_ok = True
+        d["exp_1d"] = (d["exp_1d"] * scale).fillna(d["transit_loss"])
+        d["phy_1d"] = (d["phy_1d"] * scale).fillna(0)
+        exp_pct_1d  = d["exp_1d"].mean() / d["transit_loss"].mean() * 100
+        phy_pct_1d  = 100 - exp_pct_1d
     else:
-        d["expectational"] = 0.0
-        d["physical"]      = d["transit_loss"]
-        calib_ok = False
+        d["exp_1d"] = 0.0; d["phy_1d"] = d["transit_loss"]
+        beta_1d = alpha_1d = exp_pct_1d = phy_pct_1d = float("nan")
 
-    fig = go.Figure()
+    # ── CALIBRATION B: 6-day OLS (Apr 17–22, sensitivity only) ───────────────
+    calib_6d = d[(d["date"] >= IRAN_REOPEN) &
+                 (d["date"] <= pd.Timestamp("2026-04-22"))].dropna(
+        subset=["transit_loss","brent_spread"])
+    calib_6d_ok = len(calib_6d) >= 3
 
-    # Stacked area: physical (bottom) + expectational (top)
-    fig.add_trace(go.Scatter(
-        x=d["date"], y=d["physical"],
-        fill="tozeroy", fillcolor="rgba(193,18,31,0.55)",
-        line=dict(color=PAL["physical"], width=0.5),
-        name="Physical disruption (vessels can't pass)",
-        hovertemplate="Physical: %{y:.1f} vessel-days lost<extra></extra>",
-        stackgroup="one",
-    ))
-    fig.add_trace(go.Scatter(
-        x=d["date"], y=d["expectational"],
-        fill="tonexty", fillcolor="rgba(231,111,81,0.45)",
-        line=dict(color=PAL["expectational"], width=0.5),
-        name="Expectational (self-deterrence / war-risk premia)",
-        hovertemplate="Expectational: %{y:.1f} vessel-days lost<extra></extra>",
-        stackgroup="one",
-    ))
+    if calib_6d_ok:
+        x6, y6 = calib_6d["brent_spread"].values, calib_6d["transit_loss"].values
+        beta_6d  = float(np.cov(x6, y6)[0,1] / (np.var(x6) + 1e-9))
+        alpha_6d = y6.mean() - beta_6d * x6.mean()
+        d["exp_6d"] = (alpha_6d + beta_6d * d["brent_spread"].fillna(0)).clip(0, baseline)
+        d["phy_6d"] = (d["transit_loss"] - d["exp_6d"]).clip(lower=0)
+        total6 = d["exp_6d"] + d["phy_6d"]
+        scale6 = d["transit_loss"] / total6.replace(0, np.nan)
+        d["exp_6d"] = (d["exp_6d"] * scale6).fillna(d["transit_loss"])
+        d["phy_6d"] = (d["phy_6d"] * scale6).fillna(0)
+        exp_pct_6d  = d["exp_6d"].mean() / d["transit_loss"].mean() * 100
+        phy_pct_6d  = 100 - exp_pct_6d
+    else:
+        d["exp_6d"] = 0.0; d["phy_6d"] = d["transit_loss"]
+        beta_6d = alpha_6d = exp_pct_6d = phy_pct_6d = float("nan")
 
-    # Calibration window highlight
-    fig.add_vrect(
-        x0="2026-04-17", x1="2026-04-22",
-        fillcolor="rgba(233,196,106,0.30)", layer="above", line_width=0,
+    # ── BUILD FIGURE (two panels side by side) ────────────────────────────────
+    subtitle_1d = (
+        f"β = {beta_1d:.2f} vsl-days/USD·bbl  |  "
+        f"Physical {phy_pct_1d:.0f}% / Expectational {exp_pct_1d:.0f}%"
+        if calib_1d_ok else "Apr 17 observation missing — cannot calibrate"
     )
+    subtitle_6d = (
+        f"β = {beta_6d:.2f} (sign-flipped by Apr 18 outlier)  |  "
+        f"Physical {phy_pct_6d:.0f}% / Expectational {exp_pct_6d:.0f}%"
+        if calib_6d_ok else "Calibration window < 3 observations"
+    )
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=(
+            f"A  Primary — 1-day calibration (Apr 17 only)<br>"
+            f"<sup>{subtitle_1d}</sup>",
+            f"B  Sensitivity — 6-day window (Apr 17–22)<br>"
+            f"<sup>{subtitle_6d}</sup>",
+        ),
+        shared_yaxes=True,
+        horizontal_spacing=0.06,
+    )
+
+    _SHOWLEGEND_DONE = set()
+
+    def _add_decomp_traces(col, exp_col, phy_col):
+        show_exp = "exp" not in _SHOWLEGEND_DONE
+        show_phy = "phy" not in _SHOWLEGEND_DONE
+        if show_exp: _SHOWLEGEND_DONE.add("exp")
+        if show_phy: _SHOWLEGEND_DONE.add("phy")
+        fig.add_trace(go.Scatter(
+            x=d["date"], y=d[phy_col],
+            fill="tozeroy", fillcolor="rgba(193,18,31,0.55)",
+            line=dict(color=PAL["physical"], width=0.5),
+            name="Physical (vessels can't pass)",
+            showlegend=show_phy,
+            legendgroup="phy",
+            hovertemplate="Physical: %{y:.1f}<extra></extra>",
+            stackgroup=f"s{col}",
+        ), row=1, col=col)
+        fig.add_trace(go.Scatter(
+            x=d["date"], y=d[exp_col],
+            fill="tonexty", fillcolor="rgba(231,111,81,0.45)",
+            line=dict(color=PAL["expectational"], width=0.5),
+            name="Expectational (self-deterrence / war-risk)",
+            showlegend=show_exp,
+            legendgroup="exp",
+            hovertemplate="Expectational: %{y:.1f}<extra></extra>",
+            stackgroup=f"s{col}",
+        ), row=1, col=col)
+
+    _add_decomp_traces(1, "exp_1d", "phy_1d")
+    _add_decomp_traces(2, "exp_6d", "phy_6d")
+
+    # Panel A annotations
+    fig.add_vrect(x0="2026-04-17", x1="2026-04-18",
+                  fillcolor="rgba(233,196,106,0.35)", layer="below", line_width=0,
+                  row=1, col=1)
     fig.add_annotation(
-        x="2026-04-19", yref="paper", y=0.92,
-        text="Apr 17–22<br><i>Identification<br>window</i>",
-        showarrow=False, font=dict(size=9, color="#856404"),
-        bgcolor="rgba(255,253,220,0.85)",
+        x="2026-04-17", yref="y", y=baseline * 0.82,
+        text="Apr 17<br>calibration<br>point", showarrow=True, arrowhead=2,
+        font=dict(size=8, color="#856404"), ax=36, ay=0, row=1, col=1,
     )
-    fig.add_vline(x="2026-04-17", line_dash="dash", line_color="#E9C46A", line_width=2)
+
+    # Panel B annotations — flag April 18 outlier
+    apr18_loss = float(d[d["date"] == IRAN_RECLOSE]["transit_loss"].iloc[0]) if len(
+        d[d["date"] == IRAN_RECLOSE]) > 0 else 0
+    fig.add_vrect(x0="2026-04-17", x1="2026-04-23",
+                  fillcolor="rgba(233,196,106,0.20)", layer="below", line_width=0,
+                  row=1, col=2)
+    fig.add_vrect(x0="2026-04-18", x1="2026-04-19",
+                  fillcolor="rgba(255,100,100,0.25)", layer="below", line_width=0,
+                  row=1, col=2)
     fig.add_annotation(
-        x="2026-04-17", yref="paper", y=0.80,
-        text="Iran declares<br>strait open", showarrow=True, arrowhead=2,
-        font=dict(size=9, color="#856404"), ax=30, ay=-30,
+        x="2026-04-18", yref="y2", y=baseline * 0.65,
+        text="Apr 18 outlier:<br>Iran re-closes,<br>20 vessels surge<br>→ β goes negative",
+        showarrow=True, arrowhead=2,
+        font=dict(size=8, color="#9B2226"), bgcolor="rgba(255,245,245,0.88)",
+        ax=50, ay=-20, row=1, col=2,
     )
+
+    # Shared vline at Apr 17
+    for col in (1, 2):
+        fig.add_vline(x="2026-04-17", line_dash="dash",
+                      line_color="#E9C46A", line_width=1.5,
+                      row=1, col=col)
 
     fig.update_layout(
-        template="plotly_white", height=380,
+        template="plotly_white", height=420,
         title=dict(
-            text="Apr 17 Natural Experiment — Physical vs Expectational Decomposition"
-                 + ("<br><sup>⚠ Stability caveat: g() calibrated on Apr 17–22 window only</sup>" if calib_ok
-                    else "<br><sup>⚠ Calibration window has <3 observations — decomposition not possible</sup>"),
-            font=dict(size=13)),
+            text=(
+                "Apr 17 Natural Experiment — Physical vs Expectational Decomposition"
+                "<br><sup>Panel A (primary): 1-day calibration, β = slope through origin. "
+                "Panel B: 6-day window shown as sensitivity — April 18 re-closure flips β negative.</sup>"
+            ),
+            font=dict(size=12),
+        ),
         yaxis_title="Vessel-days lost vs baseline",
-        xaxis_title="Date",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        legend=dict(orientation="h", yanchor="bottom", y=1.10),
         hovermode="x unified",
     )
-    return fig
+    fig.update_xaxes(title_text="Date", row=1, col=1)
+    fig.update_xaxes(title_text="Date", row=1, col=2)
+
+    return fig, {
+        "beta_1d": beta_1d, "alpha_1d": alpha_1d,
+        "exp_pct_1d": exp_pct_1d, "phy_pct_1d": phy_pct_1d,
+        "beta_6d": beta_6d, "alpha_6d": alpha_6d,
+        "exp_pct_6d": exp_pct_6d, "phy_pct_6d": phy_pct_6d,
+        "calib_1d_ok": calib_1d_ok, "calib_6d_ok": calib_6d_ok,
+    }
 
 
 def fig_commodity(price_df, date_range):
@@ -1394,18 +1494,54 @@ with tab1:
     with st.expander("Apr 17 Identification Window — Physical vs Expectational Decomposition", expanded=False):
         with st.spinner("Computing decomposition..."):
             price_df_decomp, _, _, _ = get_prices(ANALYSIS_START.strftime("%Y-%m-%d"), end_str)
-        st.plotly_chart(
-            fig_april17_decomp(transit_df, price_df_decomp, baseline_mean, date_range),
-            use_container_width=True,
-        )
+            decomp_fig, decomp_stats = fig_april17_decomp(
+                transit_df, price_df_decomp, baseline_mean, date_range
+            )
+        st.plotly_chart(decomp_fig, use_container_width=True)
+
+        # Primary result KPIs
+        if decomp_stats["calib_1d_ok"]:
+            kc1, kc2, kc3 = st.columns(3)
+            kc1.metric(
+                "β (1-day calibration)",
+                f"{decomp_stats['beta_1d']:.2f}",
+                "vessel-days lost per USD/bbl Brent spread",
+            )
+            kc2.metric(
+                "Physical share (primary)",
+                f"{decomp_stats['phy_pct_1d']:.0f}%",
+                "1-day calibration (Apr 17 only)",
+            )
+            kc3.metric(
+                "Expectational share (primary)",
+                f"{decomp_stats['exp_pct_1d']:.0f}%",
+                "1-day calibration (Apr 17 only)",
+            )
+        if decomp_stats["calib_6d_ok"]:
+            st.caption(
+                f"6-day sensitivity (Apr 17–22): β = {decomp_stats['beta_6d']:.2f} — "
+                f"sign is negative because the April 18 re-closure outlier (20 vessels) dominates OLS. "
+                f"Physical {decomp_stats['phy_pct_6d']:.0f}% / Expectational {decomp_stats['exp_pct_6d']:.0f}% "
+                f"under 6-day window. Not the primary result."
+            )
+
         st.info(
-            "**Identifying assumption:** On Apr 17, Iran declared the strait open. Transits stayed near "
-            "zero for 5 days. This isolates the expectational channel — the physical constraint was lifted "
-            "but vessels did not move. The calibration window (Apr 17–22, highlighted yellow) lets us "
-            "estimate g(war_risk, brent_spread) and decompose the full closure period into physical "
-            "disruption (vessels *can't* pass) and expectational loss (vessels *won't* pass).\n\n"
-            "⚠ **Stability caveat:** g() is calibrated on a 5-day window. War-risk premia may have "
-            "reset discontinuously on Apr 17. Report physical component as a range, not a point estimate."
+            "**Identifying assumption (Panel A):** On Apr 17, Iran declared the strait open. "
+            "Transits that day: 8 vessels — 13% of the 61.7/day pre-crisis baseline. "
+            "All transit loss on Apr 17 is attributed to the expectational channel "
+            "(physical barrier declared lifted; vessels still did not come). "
+            "g() is estimated as a slope through the origin: "
+            "β = transit\\_loss(Apr17) / brent\\_spread(Apr17). "
+            "Single-point calibration — zero degrees of freedom, no OLS.\n\n"
+            "**Why not the 6-day window (Panel B):** April 18, Iran re-closed. "
+            "On that day 20 vessels transited — twice the Apr 17 level, likely vessels "
+            "that had already entered the strait before the re-closure announcement. "
+            "Including Apr 18 in the OLS calibration flips β from +1.92 to −2.00, "
+            "which is economically nonsensical. Panel B exists to make this visible, "
+            "not as an alternative estimate.\n\n"
+            "⚠ **Stability caveat:** All Apr 14–23 observations are real PortWatch data. "
+            "The calibration window is now Apr 17 only. "
+            "g() stability outside that single day remains unverified."
         )
 
     with st.expander("Data provenance"):
@@ -1627,18 +1763,21 @@ with tab7:
             "Analysis 3 — Regime Detection",
             "Analysis 4 — Apr 17 Decomposition",
         ],
-        "Status": ["✅ Complete", "⚠️ Partial", "✅ Complete", "✅ Complete"],
+        "Status": ["✅ Complete", "⚠️ Partial", "✅ Complete", "✅ Revised"],
         "Key Finding": [
             "Dry bulk collapse 74.4%; evasion concentrated in crude tankers, not food cargo",
             "Detection probability model specified; requires Level-1 SAR scenes from Jasper",
             "PELT (rbf kernel) recovers 8/8 crisis dates within 5-day tolerance",
-            "Physical vs expectational decomposed; Apr 17 window isolates expectational channel",
+            "Apr 17: 8 vessels (13% of baseline) despite declared opening — backed by live PortWatch data. "
+            "Calibration narrowed to Apr 17 only (1-day); β = +1.92 vsl-days/USD·bbl. "
+            "6-day window (Apr 17–22) shown as sensitivity: Apr 18 re-closure outlier flips β negative (−2.0).",
         ],
         "Honest Limitation": [
             "Food dark fraction is upper bound only — proportional attribution, not per-vessel RCS",
             "GFW processed API provides AIS/dark counts but not vessel-level RCS for clutter removal",
-            "7 regime labels are descriptive, not a forecasting system; single event only",
-            "g() stability not confirmed post-Apr 17; premia may have reset discontinuously",
+            "7 regime labels are based on documented event dates, not PELT output; single event only",
+            "Single-point calibration (Apr 17 only) — zero degrees of freedom, no OLS. "
+            "g() stability outside Apr 17 unverified. Apr 18 included in 6-day sensitivity panel only.",
         ],
     }
     st.dataframe(pd.DataFrame(status_data), use_container_width=True, height=200)
@@ -1751,7 +1890,7 @@ with tab7:
 - Transit collapse of ~87.5% (all-vessel) documented — ground truth
 - 7 empirically-identified regimes from PortWatch changepoint detection
 - Food-relevant fleet collapsed proportionally; evasion concentrated in crude tankers
-- Apr 17 window allows physical/expectational decomposition with stated uncertainty
+- Apr 17 allows physical/expectational decomposition: 1-day calibration (primary, β=+1.92) confirmed on live data; 6-day window shown as sensitivity only (Apr 18 re-closure outlier flips β negative)
 - Cross-correlation with commodity prices at lags 0–14 days — direction and magnitude reported
 """)
     with col_no:
