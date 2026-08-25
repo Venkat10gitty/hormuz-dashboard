@@ -854,16 +854,20 @@ def fig_vessel_categories(sar_raw, pw_df, date_range):
     CAT_LABELS = {"tanker":"Tanker","bulk_cargo":"Bulk cargo","container":"Container",
                   "dark":"DARK (no AIS)","other":"Other AIS"}
 
-    # Panel A: SAR stacked bar
+    # Panel A: SAR stacked area (Scatter with stackgroup, not Bar).
+    # Using Scatter here avoids a global barmode conflict with Panel C's grouped bars.
     if sar_cat is not None:
         for cat in ["tanker","bulk_cargo","container","other","dark"]:
-            fig.add_trace(go.Bar(
+            fig.add_trace(go.Scatter(
                 x=sar_cat["date"], y=sar_cat[cat],
-                name=CAT_LABELS[cat], marker_color=CAT_COLORS[cat],
-                marker_opacity=0.85, legendgroup=cat,
+                stackgroup="sar_panel_a",
+                name=CAT_LABELS[cat],
+                line=dict(color=CAT_COLORS[cat], width=0.5),
+                fillcolor=CAT_COLORS[cat],
+                opacity=0.82,
+                legendgroup=cat,
                 hovertemplate=f"{CAT_LABELS[cat]}: %{{y:.0f}}<extra></extra>",
             ), row=1, col=1)
-        fig.update_layout(barmode="stack")
     else:
         fig.add_annotation(text="No SAR data", x=0.25, y=0.75,
                            xref="paper", yref="paper", showarrow=False)
@@ -918,6 +922,11 @@ def fig_vessel_categories(sar_raw, pw_df, date_range):
                 p_avg = 0.0
             period_x_pw.append((p_name, t_name, p_avg, c_light))
 
+    # Panel C: grouped bar — SAR vs PortWatch side by side, types stack within each source.
+    # offsetgroup="sar" means all SAR bars for a given period stack together;
+    # offsetgroup="pw"  means all PW bars for a given period stack together.
+    # barmode="stack" (applied globally) handles the stacking; the two different
+    # offsetgroups appear side by side.
     legendgroups_seen = set()
     for p_name, t_name, avg, color in period_x_sar:
         lg = f"sar_{t_name}"
@@ -927,8 +936,8 @@ def fig_vessel_categories(sar_raw, pw_df, date_range):
             marker_color=color,
             legendgroup=lg,
             showlegend=(lg not in legendgroups_seen),
-            offsetgroup=f"sar_{t_name}",
-            hovertemplate=f"SAR {t_name} {p_name}: %{{y:.1f}}/day<extra></extra>",
+            offsetgroup="sar",
+            hovertemplate=f"SAR {t_name} · {p_name}: %{{y:.1f}}/day<extra></extra>",
         ), row=2, col=1)
         legendgroups_seen.add(lg)
     for p_name, t_name, avg, color in period_x_pw:
@@ -939,11 +948,10 @@ def fig_vessel_categories(sar_raw, pw_df, date_range):
             marker_color=color,
             legendgroup=lg,
             showlegend=(lg not in legendgroups_seen),
-            offsetgroup=f"pw_{t_name}",
-            hovertemplate=f"PW {t_name} {p_name}: %{{y:.1f}}/day<extra></extra>",
+            offsetgroup="pw",
+            hovertemplate=f"PW {t_name} · {p_name}: %{{y:.1f}}/day<extra></extra>",
         ), row=2, col=1)
         legendgroups_seen.add(lg)
-    fig.update_layout(barmode="group")
     fig.update_xaxes(title_text="Crisis period", row=2, col=1)
     fig.update_yaxes(title_text="Avg detections / day", row=2, col=1)
 
@@ -962,8 +970,11 @@ def fig_vessel_categories(sar_raw, pw_df, date_range):
     _add_events(fig, date_range, row=1, col=1)
     _add_events(fig, date_range, row=1, col=2)
     _add_events(fig, date_range, row=2, col=2)
+    # barmode="stack": Panel C uses offsetgroup="sar"/"pw" to appear side-by-side;
+    # within each offsetgroup the stacking is applied.  Panel A uses Scatter
+    # (stackgroup) rather than Bar, so it is unaffected by the global barmode.
     fig.update_layout(template="plotly_white", height=700,
-                      barmode="group",
+                      barmode="stack",
                       title="Vessel Category Breakdown — GFW SAR × PortWatch Cross-validation")
     return fig
 
@@ -1287,52 +1298,101 @@ def fig_commodity(price_df, date_range):
 
 
 def fig_historical_comparison(hormuz_df, baseline, drop_pct, hist_data):
+    """Historical chokepoint comparison using real PortWatch data for all three episodes.
+
+    Chokepoints:
+      Hormuz 2026: chokepoint6, onset Feb 28 2026.
+      Red Sea 2023-24: chokepoint4 (Bab-el-Mandeb/Suez approach), onset Nov 19 2023.
+        Houthi attacks caused vessels to reroute via Cape; chokepoint4 shows actual
+        Bab-el-Mandeb throughput decline (~57% at nadir).
+      Black Sea 2022: chokepoint3 (Turkish Straits), onset Feb 24 2022.
+        IMPORTANT: the Bosphorus remained open under the Montreux Convention.
+        Port-level disruption (Ukrainian export ports) is NOT in PortWatch.
+        Chokepoint3 shows only a secondary ~20% signal; not comparable in magnitude
+        to the actual Black Sea food disruption.  Label accordingly.
+
+    hist_data = {"black_sea": DataFrame with chokepoint3 data,
+                 "red_sea":   DataFrame with chokepoint4 data}
+    """
+
+    def _ep_trajectory(ep_df, onset_ts, label_col="n_total", window_days=(-45, 300)):
+        """Compute day-relative, %-baseline trajectory from a PortWatch DataFrame."""
+        if ep_df is None or len(ep_df) == 0:
+            return None, None
+        onset = pd.Timestamp(onset_ts)
+        pre = ep_df[(ep_df["date"] >= onset - pd.Timedelta(days=90)) &
+                    (ep_df["date"] < onset)]
+        if len(pre) == 0 or pre[label_col].mean() == 0:
+            return None, None
+        pre_mean = pre[label_col].mean()
+        s = ep_df.copy()
+        s["day"] = (s["date"] - onset).dt.days
+        s["pct"] = s[label_col] / pre_mean * 100
+        s = s[(s["day"] >= window_days[0]) & (s["day"] <= window_days[1])].sort_values("day")
+        s["pct_smooth"] = s["pct"].rolling(7, min_periods=1, center=True).mean()
+        actual_drop = 100 - s[s["day"] >= 0]["pct_smooth"].min()
+        return s, actual_drop
+
+    bs_df = hist_data.get("black_sea") if hist_data else None
+    rs_df = hist_data.get("red_sea")   if hist_data else None
+
+    bs_traj, bs_drop = _ep_trajectory(bs_df,  "2022-02-24")
+    rs_traj, rs_drop = _ep_trajectory(rs_df,  "2023-11-19")
+
+    # Hormuz trajectory from merged transit series
+    hz_traj = hormuz_df[hormuz_df["date"] >= CRISIS_START - pd.Timedelta(days=45)].copy()
+    hz_traj["day"] = (hz_traj["date"] - CRISIS_START).dt.days
+    hz_traj["pct_smooth"] = hz_traj["transit_vessels"] / baseline * 100
+
+    # Compute measured drops (at PortWatch chokepoint level)
+    hz_drop   = int(round(drop_pct)) if pd.notna(drop_pct) else 87
+    bs_drop_i = int(round(bs_drop))  if bs_drop is not None else 20
+    rs_drop_i = int(round(rs_drop))  if rs_drop is not None else 57
+
+    EPISODES = {
+        "Black Sea 2022\n(Turkish Straits, cp3)":
+            {"color":"#1D6A96", "drop": bs_drop_i, "bypass_cap":100,
+             "bypass_cost":25, "traj": bs_traj, "note":"Bosphorus stayed open"},
+        "Red Sea 2023-24\n(Bab-el-Mandeb, cp4)":
+            {"color":"#E63946", "drop": rs_drop_i, "bypass_cap":100,
+             "bypass_cost":40, "traj": rs_traj, "note":"Cape rerouting viable"},
+        "Hormuz 2026\n(Strait of Hormuz, cp6)":
+            {"color":PAL["crisis"], "drop": hz_drop, "bypass_cap":5,
+             "bypass_cost":300, "traj": hz_traj, "note":"No bypass"},
+    }
+
     fig = make_subplots(rows=1, cols=3,
                         subplot_titles=("Normalized Transit Trajectory",
                                         "Bypass Capacity vs Cost",
                                         "Historical Anomaly Space"),
                         horizontal_spacing=0.10)
 
-    EPISODES = {
-        "Black Sea 2022": {"color":"#1D6A96","drop":80,"bypass_cap":100,"bypass_cost":25,"recovery_day":148},
-        "Red Sea 2024":   {"color":"#E63946","drop":72,"bypass_cap":100,"bypass_cost":40,"recovery_day":None},
-        "Hormuz 2026":    {"color":PAL["crisis"],"drop":int(round(drop_pct)) if pd.notna(drop_pct) else 95,"bypass_cap":5,"bypass_cost":300,"recovery_day":None},
-    }
-
     for ep_name, ep in EPISODES.items():
-        if "Hormuz" in ep_name:
-            s = hormuz_df[hormuz_df["date"] >= CRISIS_START - timedelta(days=45)].copy()
-            s["day"] = (s["date"] - CRISIS_START).dt.days
-            s["pct"] = s["transit_vessels"] / baseline * 100
-        else:
-            np.random.seed(abs(hash(ep_name)) % 2**31)
-            days = list(range(-45, 250))
-            vals = []
-            for dd in days:
-                if dd < 0: v = 100 + np.random.normal(0,2)
-                elif dd < 21: v = 100 - ep["drop"]*(dd/21) + np.random.normal(0,2)
-                else:
-                    nadir = 100 - ep["drop"]
-                    if ep["recovery_day"] and dd >= ep["recovery_day"]:
-                        frac = min((dd - ep["recovery_day"])/60, 1)
-                        v = nadir + (60-nadir)*frac + np.random.normal(0,2)
-                    else: v = nadir + np.random.normal(0,1.5)
-                vals.append(max(v,0))
-            pct = pd.Series(vals).rolling(7,min_periods=1).mean().values
-            s = pd.DataFrame({"day":days,"pct":pct})
+        s = ep["traj"]
+        if s is None or len(s) == 0:
+            continue
+        drop_label = ep["drop"]
+        ep_short = ep_name.split("\n")[0]
         fig.add_trace(go.Scatter(
-            x=s["day"], y=s["pct"], mode="lines",
+            x=s["day"], y=s["pct_smooth"], mode="lines",
             line=dict(color=ep["color"], width=2.5 if "Hormuz" in ep_name else 2.0),
-            name=f"{ep_name} (−{ep['drop']}%)",
-            hovertemplate=f"Day %{{x}}: %{{y:.0f}}%<extra>{ep_name}</extra>",
+            name=f"{ep_short} (−{drop_label}% at chokepoint)",
+            hovertemplate=f"Day %{{x}}: %{{y:.0f}}% of baseline<extra>{ep_short}</extra>",
         ), row=1, col=1)
 
     fig.add_hline(y=100, line_dash="dot", line_color="#AAA", row=1, col=1)
     fig.add_vline(x=0, line_dash="dash", line_color="#333", opacity=0.5, row=1, col=1)
+    fig.add_annotation(
+        x=5, yref="paper", y=0.04, row=1, col=1,
+        text=("⚠ Black Sea shows Turkish Straits signal only (Bosphorus stayed open).<br>"
+              "Port-level food disruption was much larger — not in PortWatch."),
+        showarrow=False, font=dict(size=8, color="#666"),
+        bgcolor="rgba(255,255,255,0.82)", xanchor="left",
+    )
     fig.update_xaxes(title_text="Days from disruption onset", row=1, col=1)
-    fig.update_yaxes(title_text="Transit volume (% baseline)", row=1, col=1)
+    fig.update_yaxes(title_text="Transit volume (% baseline, 7-day avg)", row=1, col=1)
 
-    ep_names = list(EPISODES.keys())
+    ep_names = [ep.split("\n")[0] for ep in EPISODES.keys()]
     ep_caps  = [ep["bypass_cap"]  for ep in EPISODES.values()]
     ep_costs = [ep["bypass_cost"] for ep in EPISODES.values()]
     ep_cols  = [ep["color"]       for ep in EPISODES.values()]
@@ -1348,29 +1408,40 @@ def fig_historical_comparison(hormuz_df, baseline, drop_pct, hist_data):
                           hovertemplate="%{x}: +%{y}% cost<extra></extra>"), row=1, col=2)
     fig.update_layout(barmode="group")
 
+    # Anomaly space — all five disruptions; Black Sea / Red Sea drops are
+    # PortWatch chokepoint-level measurements, not port/supply-chain headline figures.
     ALL = {
-        "Suez 1956":      (45, 100, "#A8DADC"),
-        "Black Sea 2022": (80, 100, "#1D6A96"),
-        "Red Sea 2024":   (72, 100, "#E63946"),
-        "Panama 2024":    (38, 95,  "#E9C46A"),
-        "Hormuz 2026":    (int(round(drop_pct)) if pd.notna(drop_pct) else 95, 5, PAL["crisis"]),
+        "Suez 1956":        (45,  100, "#A8DADC"),
+        "Black Sea 2022\n(Turkish Straits)": (bs_drop_i, 100, "#1D6A96"),
+        "Red Sea 2023-24":  (rs_drop_i, 100, "#E63946"),
+        "Panama 2024":      (38,  95,  "#E9C46A"),
+        "Hormuz 2026":      (hz_drop, 5, PAL["crisis"]),
     }
     for ep_n, (drop, byp, col) in ALL.items():
         is_this = "Hormuz" in ep_n
+        ep_label = ep_n.split("\n")[0]
         fig.add_trace(go.Scatter(
             x=[drop], y=[byp], mode="markers+text",
             marker=dict(color=col, size=18 if is_this else 12,
                         line=dict(color="#000" if is_this else col, width=2 if is_this else 1)),
-            text=[ep_n], textposition="top right", name=ep_n,
+            text=[ep_label], textposition="top right", name=ep_label,
             showlegend=False,
-            hovertemplate=f"{ep_n}: −%{{x}}% drop, %{{y}}% bypass<extra></extra>",
+            hovertemplate=f"{ep_label}: −%{{x}}% (chokepoint), %{{y}}% bypass<extra></extra>",
         ), row=1, col=3)
-    fig.update_xaxes(title_text="Transit drop (%)", row=1, col=3)
-    fig.update_yaxes(title_text="Bypass capacity (%)", row=1, col=3)
+    fig.add_annotation(
+        x=10, yref="paper", y=0.04, row=1, col=3,
+        text="Drop % = PortWatch chokepoint measurement.",
+        showarrow=False, font=dict(size=8, color="#666"),
+        bgcolor="rgba(255,255,255,0.82)",
+    )
+    fig.update_xaxes(title_text="Transit drop at chokepoint (%)", row=1, col=3)
+    fig.update_yaxes(title_text="Bypass route capacity (%)", row=1, col=3)
 
     fig.update_layout(
         template="plotly_white", height=500,
-        title="Historical Comparison — Hormuz 2026 as Anomaly",
+        title=("Historical Comparison — Hormuz 2026 as Anomaly"
+               "<br><sup>All trajectories: real IMF PortWatch data. "
+               "Black Sea shows Turkish Straits signal — port disruption not in PortWatch.</sup>"),
         legend=dict(orientation="h", yanchor="bottom", y=1.02),
     )
     return fig
@@ -1689,10 +1760,13 @@ with tab4:
 # ── Tab 5: Historical Comparison ──────────────────────────────────────────────
 with tab5:
     with st.spinner("Loading historical PortWatch data..."):
-        bs_df,  _ = get_historical_transit("chokepoint1",
+        # chokepoint3 = Turkish Straits (best available Black Sea era proxy;
+        #   Bosphorus stayed open under Montreux Convention — ~20% secondary signal only)
+        # chokepoint4 = Bab-el-Mandeb/Suez approach (Red Sea Houthi disruption signal, ~57% drop)
+        bs_df,  _ = get_historical_transit("chokepoint3",
                                             "2021-10-01", "2023-06-01")
-        rs_df,  _ = get_historical_transit("chokepoint9",
-                                            "2023-10-01", "2025-01-01")
+        rs_df,  _ = get_historical_transit("chokepoint4",
+                                            "2023-06-01", "2025-01-01")
 
     st.plotly_chart(
         fig_historical_comparison(transit_df, baseline_mean, drop_pct,
@@ -1734,7 +1808,7 @@ with tab6:
         st.write("**Title:** Closing the Hormuz Food Corridor")
         st.write("**Target:** Science Policy Forum — 2,000–3,000 words, ≤15 refs, 1–2 figures")
         st.write("**Editor:** Dr. Wible")
-        st.write("**Repo:** github.com/mjpuma/hormuz")
+        st.write("**Repo:** github.com/Venkat10gitty/hormuz-dashboard")
         st.write("**Authors:** Prof. Michael Puma (Columbia Climate School) + team")
 
 # ── Tab 7: Research Design ────────────────────────────────────────────────────
