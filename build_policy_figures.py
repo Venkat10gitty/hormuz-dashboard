@@ -170,25 +170,29 @@ def build_figure1(pw_df, urea_monthly):
                   xytext=(ANALYSIS_START + pd.Timedelta(days=10), baseline_tanker + 6),
                   fontsize=7.5, color=PAL["tanker"], va="bottom")
 
-    # Crisis event lines
+    # Crisis event lines — staggered high/low so Feb 28 and Mar 2 (2 days apart)
+    # don't collide.  y_frac drives label height; alternating 0.93 / 0.63.
     events = [
-        (CRISIS_START,   "Feb 28\nOperation Epic Fury",  PAL["crisis"]),
-        (IRGC_CLOSURE,   "Mar 2\nIRGC closure",         "#C1121F"),
-        (NEUTRAL_OPEN,   "Mar 26\nNeutral ships",        PAL["baseline"]),
-        (US_BLOCKADE,    "Apr 13\nUS blockade",          PAL["dark"]),
+        (CRISIS_START,   "Feb 28\nOperation Epic Fury",  PAL["crisis"],   0.93),
+        (IRGC_CLOSURE,   "Mar 2\nIRGC closure",         "#C1121F",        0.62),
+        (NEUTRAL_OPEN,   "Mar 26\nNeutral ships",        PAL["baseline"], 0.93),
+        (US_BLOCKADE,    "Apr 13\nUS blockade",          PAL["dark"],     0.62),
     ]
+    # Compute y_top after ylim is stable
+    ax_a.set_ylim(bottom=0)
     y_top = ax_a.get_ylim()[1] if ax_a.get_ylim()[1] > 0 else 120
-    for evdt, label, color in events:
+    for evdt, label, color, y_frac in events:
         ax_a.axvline(evdt, color=color, lw=1.2, ls="--", alpha=0.75)
-        ax_a.text(evdt + pd.Timedelta(days=1), y_top * 0.96, label,
-                  fontsize=7, color=color, va="top", linespacing=1.3)
+        ax_a.text(evdt + pd.Timedelta(days=1), y_top * y_frac, label,
+                  fontsize=7, color=color, va="top", linespacing=1.3,
+                  bbox=dict(boxstyle="round,pad=0.15", facecolor="white",
+                            alpha=0.75, edgecolor="none"))
 
     ax_a.set_xlim(ANALYSIS_START, d["date"].max() + pd.Timedelta(days=5))
     ax_a.xaxis.set_major_locator(mdates.MonthLocator(interval=1))
     ax_a.xaxis.set_major_formatter(mdates.DateFormatter("%b %Y"))
     plt.setp(ax_a.xaxis.get_majorticklabels(), rotation=35, ha="right", fontsize=8)
     ax_a.set_ylabel("AIS-tracked vessels / day", fontsize=9)
-    ax_a.set_ylim(bottom=0)
     ax_a.legend(fontsize=7.5, loc="upper right", framealpha=0.85)
     ax_a.set_title("A", loc="left", fontweight="bold", fontsize=11)
     ax_a.set_title("Daily transit counts: food segment vs tankers — Oct 2025 to present",
@@ -265,8 +269,8 @@ def build_figure2(urea_monthly):
 
     All dates derived empirically from data or documented sources.
     """
-    fig, ax = plt.subplots(figsize=(14, 5))
-    fig.subplots_adjust(left=0.05, right=0.97, top=0.82, bottom=0.22)
+    fig, ax = plt.subplots(figsize=(14, 5.5))
+    fig.subplots_adjust(left=0.05, right=0.97, top=0.82, bottom=0.28)
 
     # Timeline span
     t_start = pd.Timestamp("2026-01-15")
@@ -364,44 +368,41 @@ def build_figure2(urea_monthly):
                 arrowprops=dict(arrowstyle="<->", color="#c0392b", lw=1.2))
 
     # ── Event markers ─────────────────────────────────────────────────────────
-    def add_event(date, label, sublabel, source_label, y_label, color, is_real=True):
+    # Three events cluster within a 5-day window (Feb 28 – Mar 5).
+    # Fix: stagger at three distinct y heights so boxes don't overlap.
+    # Source citations are removed from inline labels and consolidated into
+    # the bottom footnote block to avoid mid-chart text collisions.
+    def add_event(date, label, sublabel, y_label, color, is_real=True, ha="center"):
         ax.plot(date, 0, marker="o", ms=11, color=color, zorder=5, mec="white", mew=1.5)
         ax.vlines(date, 0, y_label - 0.18, color=color, lw=1.2, ls="--", zorder=3, alpha=0.8)
-        marker = "●" if is_real else "○"
         bg_color = "white" if is_real else "#FFF9E0"
         ec_color = color if is_real else "#856404"
         ax.text(date, y_label, f"{label}\n{sublabel}",
-                ha="center", va="bottom", fontsize=8.0,
+                ha=ha, va="bottom", fontsize=8.0,
                 fontweight="bold" if is_real else "normal",
                 color=color if is_real else "#856404",
                 bbox=dict(boxstyle="round,pad=0.28", facecolor=bg_color,
                           alpha=0.92, edgecolor=ec_color, lw=0.8 if is_real else 1.2))
-        if source_label:
-            ax.text(date, y_label - 1.12, source_label,
-                    ha="center", va="top", fontsize=6.5, color="#555", style="italic")
 
-    # Event 1: Transit collapse
+    # Event 1: Transit collapse — tallest stem, left-of-cluster
     add_event(T_COLLAPSE,
               "Feb 28\nTransit collapse",
-              f"−87% within 72 h",
-              "IMF PortWatch (live)",
-              y_label=3.5, color=PAL["crisis"], is_real=True)
+              "−87% within 72 h",
+              y_label=5.1, color=PAL["crisis"], is_real=True, ha="right")
 
-    # Event 2: Fertilizer inflection
+    # Event 2: Fertilizer inflection — medium stem, centre
     fert_date_str = fert_inflection.strftime("%b %Y")
     fert_val_str  = f"${fert_inflection_val:.0f}/mt (+{fert_inflection_pct:.0f}%)" if fert_inflection_val else ""
     add_event(fert_inflection,
               f"{fert_date_str}\nUrea price inflection",
               fert_val_str,
-              "WB Pink Sheet (live, monthly)",
-              y_label=3.5, color=PAL["fert"], is_real=True)
+              y_label=3.6, color=PAL["fert"], is_real=True, ha="left")
 
-    # Event 3: Wheat signal (labeled as anchors, not real FRED)
+    # Event 3: Wheat signal (labeled as anchors, not real FRED) — high stem, right-of-cluster
     add_event(WHEAT_SIGNAL,
               "~Mar 5\nWheat price rise",
               "+10% ($213→$234/mt)",
-              "⚠ Calibrated anchors — FRED unavailable",
-              y_label=3.5, color=PAL["wheat"], is_real=False)
+              y_label=4.5, color=PAL["wheat"], is_real=False, ha="left")
 
     # Event 4: End of planting window (documented)
     ax.axvline(PLANTING_END, color="#1D6A96", lw=1.5, ls=":", alpha=0.7, zorder=3)
@@ -431,16 +432,17 @@ def build_figure2(urea_monthly):
         mpatches.Patch(color=PAL["planting"], alpha=0.5, label="Spring planting window (documented)"),
         mpatches.Patch(color=PAL["unmon"], alpha=0.4, label="Unmonitored interval (fertilizer → harvest)"),
         Line2D([0], [0], marker="o", color="w", markerfacecolor=PAL["crisis"],
-               ms=9, label="Transit collapse — PortWatch (real)"),
+               ms=9, label="Transit collapse — IMF PortWatch (real)"),
         Line2D([0], [0], marker="o", color="w", markerfacecolor=PAL["fert"],
                ms=9, label="Urea inflection — WB Pink Sheet (real)"),
         Line2D([0], [0], marker="o", color="w", markerfacecolor=PAL["wheat"],
                markeredgecolor="#856404", ms=9,
-               label="Wheat signal — calibrated anchors (FRED unavailable) ○"),
+               label="Wheat signal — calibrated anchors only ○ (FRED unavailable)"),
     ]
+    # Legend sits below the axes, left-aligned
     ax.legend(handles=legend_elements, loc="lower left",
-              fontsize=7.5, framealpha=0.92, ncol=3,
-              bbox_to_anchor=(0, -0.32), borderaxespad=0)
+              fontsize=7.5, framealpha=0.92, ncol=2,
+              bbox_to_anchor=(0.0, -0.40), borderaxespad=0)
 
     # ── x-axis ───────────────────────────────────────────────────────────────
     ax.set_xlim(t_start, t_end)
@@ -453,12 +455,20 @@ def build_figure2(urea_monthly):
         "Planting Decisions → Grain Market",
         fontsize=10, pad=10, fontweight="semibold",
     )
-    ax.text(0.99, -0.22,
-            "Grain price response: FRED PWHEAMTUSDM unavailable — calibrated World Bank GEM anchors used (open circle).\n"
-            "Absence of confirmed grain price signal as of Aug 2026 is consistent with the unmonitored interval hypothesis:\n"
-            "the harvest-level impact of Mar–May fertilizer disruption will not appear in price data until Q3–Q4 2026.",
-            transform=ax.transAxes, fontsize=7, color="#666", ha="right", va="bottom",
-            style="italic", linespacing=1.4)
+
+    # Bottom-right footnote — separated from legend to avoid overlap.
+    # Two distinct text blocks: sources (top) and caveat (bottom).
+    fig.text(0.97, 0.04,
+             "Sources: Transit collapse — IMF PortWatch (live). "
+             "Urea price — World Bank CMO Pink Sheet (live, monthly). "
+             "Wheat — calibrated World Bank GEM anchors (FRED API unavailable; open circle).",
+             ha="right", va="bottom", fontsize=6.5, color="#555", style="italic",
+             linespacing=1.4, wrap=True)
+    fig.text(0.97, 0.01,
+             "Grain price lag still open as of Aug 2026: harvest-level impact of Mar–May fertilizer disruption "
+             "will not appear in price data until Q3–Q4 2026.",
+             ha="right", va="bottom", fontsize=6.5, color="#888", style="italic",
+             linespacing=1.4)
 
     plt.savefig(OUT / "fig2_transmission_timeline.png", dpi=300, bbox_inches="tight")
     plt.savefig(OUT / "fig2_transmission_timeline.svg", bbox_inches="tight", format="svg")
