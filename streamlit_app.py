@@ -109,7 +109,10 @@ PAL = {
     "fert":"#E76F51","wheat":"#2A9D8F","tanker":"#C1121F",
     "bulk":"#2A9D8F","container":"#E9C46A","dark":"#9B2226",
     "other":"#ADB5BD","gaps":"#E76F51","enc":"#9B59B6",
-    "expectational":"#E76F51","physical":"#C1121F",
+    # Three-channel decomposition colors (v3.1 spec)
+    "physical":"#C1121F",        # vessels cannot pass — dark red
+    "institutional":"#E9A84C",   # contractually barred (JWC/war clauses/P&I) — amber
+    "discretionary":"#E76F51",   # could sail but owner/master declines — orange
 }
 
 WINDWARD_ANCHORS = {
@@ -133,14 +136,17 @@ TAXONOMY_TABLE = pd.DataFrame([
     ["Outside shipping lane",     "Davenport #8",                    "Sanctioned crude evasion index",         "SAR dark fraction (all vessel types)"],
     ["Not heading to port",       "Davenport #12",                   "Self-deterrence corroboration",          "Gulf port calls (PortWatch n_total)"],
     ["Abnormal stop",             "Riveiro (2018) — Anchoring",      "Port congestion → rerouting signal",     "AIS: avg speed=0 in bbox"],
-    ["Self-deterrence",           "NEW — no Davenport code",         "Expectational channel isolation",        "Apr 17: declared-open; transits stayed 0"],
+    ["Self-deterrence",           "NEW — no Davenport code",         "Discretionary channel isolation",        "Apr 17: declared-open; transits stayed 0"],
 ], columns=["Riveiro Family / Category", "Davenport Mapping", "Aggregate Treatment", "Observable Metric"])
 
 NOVEL_CATEGORIES = pd.DataFrame([
     ["Self-deterrence",
      "Vessels choose not to enter even when the strait is declared open.",
-     "Apr 17, 2026 — Iran declared strait open; transits remained at zero for 5 days.",
-     "Isolates the expectational channel: physical constraint lifted, market fear persists."],
+     "Apr 17, 2026 — Iran declared strait open; 8 vessels transited (11% of baseline). "
+     "As of Aug 2026, R(τ) has never exceeded 0.40 despite the declared reopening.",
+     "Isolates the discretionary channel: declared reopening with no physical block; "
+     "master/owner refusal persists. Institutional channel (war clauses, JWC listing) "
+     "also remains active — upper bound only until M5 separates the two."],
     ["Regime-transition speed",
      "How rapidly aggregate fleet behavior responds to political signals.",
      "Transit collapse: 113 → 6 vessels/day within 72 hours of IRGC closure.",
@@ -1073,25 +1079,28 @@ def fig_dark_analysis(sar_df, gaps_df, enc_df, date_range, sar_raw=None):
 
 
 def fig_april17_decomp(transit_df, price_df, baseline, date_range):
-    """Physical vs expectational decomposition — two-panel figure.
+    """Three-channel decomposition — upper-bound estimate from Apr 17 natural experiment.
 
-    Panel A (primary): 1-day calibration on April 17 only.
-      Identifying assumption: Iran declared strait open on Apr 17; any remaining
-      transit loss on that day is purely expectational (physical barrier = 0).
-      g() is estimated as a slope through the origin:
-        beta = transit_loss(Apr17) / brent_spread(Apr17)
-        alpha = 0  (no expectational loss when Brent is at pre-crisis level)
-      One observation, zero degrees of freedom — no OLS. Transparent single-point
-      calibration.
+    Three channels (v3.1 spec):
+      Physical:       vessel cannot pass — blockade, mining, seizure, force.
+      Institutional:  not permitted or covered — JWC listing, war clauses (CONWARTIME/
+                      VOYWAR 2025), P&I conditions, flag-state advisories, financing refusal.
+      Discretionary:  could sail and is covered; owner or master declines.
 
-    Panel B (sensitivity): 6-day OLS over April 17–22.
-      April 18 (Iran re-closes, 20 vessels transited) is inside this window and
-      is the dominant outlier — it drives OLS beta negative (-2.0), which is
-      economically nonsensical. Shown here to make the outlier's effect visible,
-      not as an alternative estimate to use.
+    Panel A (primary): 1-day ceiling estimate on April 17 only.
+      Iran declared strait open; US blockade was still active. The remaining transit
+      loss (87% on Apr 17) is an UPPER BOUND on the institutional + discretionary
+      channels combined — not a calibrated estimate, because the physical channel
+      may not have been zero. Proper identification (M5 JWC discontinuity + M7
+      out-of-sample test against Red Sea) requires war risk premium data, pending
+      acquisition. The β = transit_loss / brent_spread is an interim ceiling.
 
-    All observations in the window are real PortWatch data (is_observed=True),
-    confirmed by live pull.
+    Panel B (contaminated window — shown to explain why 6-day OLS is retired):
+      Apr 18: Iran re-closes, 20 vessels surged (committed before announcement).
+      That single outlier drives OLS β negative (−2.0). This panel exists only to
+      show why the 6-day window cannot be used. Not an alternative result.
+
+    All observations are real PortWatch data (is_observed=True).
     """
     mask = (transit_df["date"] >= CRISIS_START) & \
            (transit_df["date"] <= pd.Timestamp(str(date_range[1])))
@@ -1111,7 +1120,9 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
     if calib_1d_ok:
         apr17_loss  = float(apr17_row["transit_loss"].iloc[0])
         apr17_brent = float(apr17_row["brent_spread"].iloc[0])
-        # Slope through origin: all Apr17 loss is expectational by assumption
+        # Slope through origin: upper bound — all Apr 17 non-physical loss attributed
+        # to institutional + discretionary combined (US blockade still active that day,
+        # so this overstates the combined channel; report as ceiling, not estimate).
         beta_1d  = apr17_loss / max(apr17_brent, 1e-9)
         alpha_1d = 0.0
         d["exp_1d"] = (alpha_1d + beta_1d * d["brent_spread"].fillna(0)).clip(0, baseline)
@@ -1151,21 +1162,21 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
     # ── BUILD FIGURE (two panels side by side) ────────────────────────────────
     subtitle_1d = (
         f"β = {beta_1d:.2f} vsl-days/USD·bbl  |  "
-        f"Physical {phy_pct_1d:.0f}% / Expectational {exp_pct_1d:.0f}%"
-        if calib_1d_ok else "Apr 17 observation missing — cannot calibrate"
+        f"Physical {phy_pct_1d:.0f}% / Inst+Disc upper bound {exp_pct_1d:.0f}%"
+        if calib_1d_ok else "Apr 17 observation missing — cannot compute ceiling"
     )
     subtitle_6d = (
-        f"β = {beta_6d:.2f} (sign-flipped by Apr 18 outlier)  |  "
-        f"Physical {phy_pct_6d:.0f}% / Expectational {exp_pct_6d:.0f}%"
-        if calib_6d_ok else "Calibration window < 3 observations"
+        f"β = {beta_6d:.2f} (sign-flipped by Apr 18 outlier — window contaminated)  |  "
+        f"Physical {phy_pct_6d:.0f}% / Combined {exp_pct_6d:.0f}%"
+        if calib_6d_ok else "Window < 3 observations"
     )
 
     fig = make_subplots(
         rows=1, cols=2,
         subplot_titles=(
-            f"A  Primary — 1-day calibration (Apr 17 only)<br>"
+            f"A  Ceiling estimate — 1-day upper bound (Apr 17 only)<br>"
             f"<sup>{subtitle_1d}</sup>",
-            f"B  Sensitivity — 6-day window (Apr 17–22)<br>"
+            f"B  Contaminated window (retired) — shown to explain exclusion<br>"
             f"<sup>{subtitle_6d}</sup>",
         ),
         shared_yaxes=True,
@@ -1192,11 +1203,11 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
         fig.add_trace(go.Scatter(
             x=d["date"], y=d[exp_col],
             fill="tonexty", fillcolor="rgba(231,111,81,0.45)",
-            line=dict(color=PAL["expectational"], width=0.5),
-            name="Expectational (self-deterrence / war-risk)",
+            line=dict(color=PAL["discretionary"], width=0.5),
+            name="Institutional + Discretionary (upper bound)",
             showlegend=show_exp,
             legendgroup="exp",
-            hovertemplate="Expectational: %{y:.1f}<extra></extra>",
+            hovertemplate="Inst+Disc (upper bound): %{y:.1f}<extra></extra>",
             stackgroup=f"s{col}",
         ), row=1, col=col)
 
@@ -1209,7 +1220,7 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
                   row=1, col=1)
     fig.add_annotation(
         x="2026-04-17", yref="y", y=baseline * 0.82,
-        text="Apr 17<br>calibration<br>point", showarrow=True, arrowhead=2,
+        text="Apr 17<br>ceiling<br>estimate", showarrow=True, arrowhead=2,
         font=dict(size=8, color="#856404"), ax=36, ay=0, row=1, col=1,
     )
 
@@ -1240,9 +1251,9 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
         template="plotly_white", height=420,
         title=dict(
             text=(
-                "Apr 17 Natural Experiment — Physical vs Expectational Decomposition"
-                "<br><sup>Panel A (primary): 1-day calibration, β = slope through origin. "
-                "Panel B: 6-day window shown as sensitivity — April 18 re-closure flips β negative.</sup>"
+                "Apr 17 Natural Experiment — Three-Channel Decomposition (Upper Bound)"
+                "<br><sup>Panel A: 1-day ceiling estimate — β is an upper bound on the institutional + discretionary channels combined. "
+                "Panel B: 6-day window retired — Apr 18 outlier flips β negative; shown only to explain exclusion.</sup>"
             ),
             font=dict(size=12),
         ),
@@ -1259,6 +1270,164 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
         "beta_6d": beta_6d, "alpha_6d": alpha_6d,
         "exp_pct_6d": exp_pct_6d, "phy_pct_6d": phy_pct_6d,
         "calib_1d_ok": calib_1d_ok, "calib_6d_ok": calib_6d_ok,
+    }
+
+
+def fig_nonrecovery(transit_df, baseline, t_open=None):
+    """M8 Non-recovery R(τ) — transit recovery ratio since declared reopening.
+
+    R(τ) = 7-day rolling mean of n_total / pre-crisis baseline, where τ is
+    days since t_open (Apr 17, 2026 — Iran's declared reopening).
+
+    τ½ = first τ where R(τ) ≥ 0.5.  If the threshold is never reached in the
+    observation window, report as censored.
+
+    Smoothing rationale: raw daily counts after Apr 17 are 1–10 vessels/day —
+    single-digit noise dominates day-to-day variation. 7-day rolling mean (same
+    window used in the main transit chart) suppresses this without losing the
+    July partial-return signal (which persisted for ~8 days).
+
+    Source: IMF PortWatch chokepoint6 live data.
+    """
+    if t_open is None:
+        t_open = IRAN_REOPEN
+
+    d = transit_df[transit_df["date"] >= t_open].copy()
+    if d.empty:
+        return None, {}
+
+    d = d.sort_values("date").reset_index(drop=True)
+    d["tau"] = (d["date"] - t_open).dt.days
+    # 7-day rolling mean — min 3 obs so the first few days still appear
+    d["rolling_n"] = d["transit_vessels"].rolling(7, min_periods=3).mean()
+    d["R"] = d["rolling_n"] / max(float(baseline), 1.0)
+
+    # τ½ detection
+    reached = d[d["R"] >= 0.5]
+    tau_half = int(reached["tau"].min()) if not reached.empty else None
+    tau_current = int(d["tau"].max())
+
+    # Partial-return detection: ≥5 consecutive days above R=0.30 (not full recovery)
+    # Record the first such run and its smoothed peak.
+    d["above_30"] = (d["R"] >= 0.30) & (d["R"] < 0.50)
+    partial_start = partial_peak = partial_end_tau = None
+    run, run_start_idx, run_peak = 0, 0, 0.0
+    for i, row in d.iterrows():
+        if row["above_30"]:
+            if run == 0:
+                run_start_idx = int(row["tau"])
+            run += 1
+            if row["R"] > run_peak:
+                run_peak = row["R"]
+        else:
+            if run >= 5 and partial_start is None:
+                partial_start = run_start_idx
+                partial_peak = run_peak
+                partial_end_tau = int(row["tau"])
+            run = 0
+            run_peak = 0.0
+    if run >= 5 and partial_start is None:
+        partial_start = run_start_idx
+        partial_peak = run_peak
+        partial_end_tau = tau_current
+
+    # ── Build figure ────────────────────────────────────────────────────────
+    fig = go.Figure()
+
+    # Shaded fill under R(τ)
+    fig.add_trace(go.Scatter(
+        x=d["tau"], y=d["R"],
+        mode="lines",
+        name="R(τ) — 7-day rolling mean / baseline",
+        line=dict(color=PAL["baseline"], width=2.5),
+        fill="tozeroy",
+        fillcolor="rgba(45,106,79,0.12)",
+        hovertemplate="τ = %{x}d since Apr 17 · R = %{y:.3f}<extra></extra>",
+    ))
+
+    # R = 0.5 threshold line
+    fig.add_hline(
+        y=0.5,
+        line_dash="dash", line_color="#E9C46A", line_width=1.8,
+        annotation_text="R = 0.5  (50% recovery threshold)",
+        annotation_position="top right",
+        annotation_font=dict(size=9, color="#856404"),
+    )
+
+    # Censored annotation at current τ
+    fig.add_annotation(
+        x=tau_current, y=0.53,
+        xref="x", yref="y",
+        text=(
+            f"<b>τ½ > {tau_current} d — CENSORED</b><br>"
+            "50% threshold never reached<br>"
+            f"as of {TODAY.strftime('%b %d, %Y')}"
+        ),
+        showarrow=True, arrowhead=2,
+        arrowcolor=PAL["crisis"],
+        font=dict(size=9, color=PAL["crisis"]),
+        bgcolor="rgba(255,245,245,0.92)",
+        bordercolor=PAL["crisis"], borderwidth=1,
+        ax=-120, ay=50,
+    )
+
+    # Apr 17 origin marker
+    fig.add_vline(x=0, line_dash="dot", line_color="#E9C46A", line_width=1.4)
+    fig.add_annotation(
+        x=1, y=0.96, xref="x", yref="paper",
+        text="Apr 17<br>declared open",
+        font=dict(size=8, color="#856404"),
+        showarrow=False,
+    )
+
+    # July partial-return annotation + shading (only if smoothing preserved the signal)
+    if partial_start is not None:
+        fig.add_vrect(
+            x0=partial_start, x1=partial_end_tau,
+            fillcolor="rgba(233,168,76,0.15)", layer="below", line_width=0,
+        )
+        mid_tau = (partial_start + partial_end_tau) // 2
+        fig.add_annotation(
+            x=mid_tau, y=partial_peak + 0.04,
+            xref="x", yref="y",
+            text=(
+                f"July partial return<br>"
+                f"peak R ≈ {partial_peak:.2f}<br>"
+                "collapsed within ~10d"
+            ),
+            showarrow=True, arrowhead=2,
+            arrowcolor=PAL["institutional"],
+            font=dict(size=8, color="#6B3E26"),
+            bgcolor="rgba(255,248,240,0.90)",
+            bordercolor=PAL["institutional"], borderwidth=1,
+            ax=55, ay=-30,
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=380,
+        title=dict(
+            text=(
+                "M8 Non-Recovery R(τ) — Hormuz after Declared Reopening (Apr 17)"
+                f"<br><sup>τ½ not reached in {tau_current} observation days · "
+                "IMF PortWatch chokepoint6 · 7-day rolling mean · "
+                "Zero synthetic data</sup>"
+            ),
+            font=dict(size=12),
+        ),
+        xaxis_title="τ (days since Apr 17, 2026 — Iran's declared reopening)",
+        yaxis_title="R(τ) = smoothed transit / pre-crisis baseline",
+        yaxis=dict(range=[0, max(0.65, (d["R"].max() if not d["R"].isna().all() else 0.5) + 0.10)]),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        hovermode="x unified",
+    )
+
+    return fig, {
+        "tau_current": tau_current,
+        "tau_half": tau_half,
+        "partial_start_tau": partial_start,
+        "partial_peak": partial_peak,
+        "r_at_0": float(d[d["tau"] <= 1]["R"].mean()) if not d[d["tau"] <= 1].empty else float("nan"),
     }
 
 
@@ -1562,7 +1731,7 @@ with tab1:
     st.caption(EVENT_SOURCES)
 
     # April 17 decomposition section
-    with st.expander("Apr 17 Identification Window — Physical vs Expectational Decomposition", expanded=False):
+    with st.expander("Apr 17 Identification Window — Three-Channel Decomposition (Ceiling Estimate)", expanded=False):
         with st.spinner("Computing decomposition..."):
             price_df_decomp, _, _, _ = get_prices(ANALYSIS_START.strftime("%Y-%m-%d"), end_str)
             decomp_fig, decomp_stats = fig_april17_decomp(
@@ -1570,49 +1739,46 @@ with tab1:
             )
         st.plotly_chart(decomp_fig, use_container_width=True)
 
-        # Primary result KPIs
+        # KPIs — labeled as ceiling estimates, not calibrated results
         if decomp_stats["calib_1d_ok"]:
             kc1, kc2, kc3 = st.columns(3)
             kc1.metric(
-                "β (1-day calibration)",
+                "β (1-day ceiling estimate)",
                 f"{decomp_stats['beta_1d']:.2f}",
-                "vessel-days lost per USD/bbl Brent spread",
+                "vsl-days/USD·bbl — upper bound, not a calibrated estimate",
             )
             kc2.metric(
-                "Physical share (primary)",
+                "Physical share (lower bound)",
                 f"{decomp_stats['phy_pct_1d']:.0f}%",
-                "1-day calibration (Apr 17 only)",
+                "Apr 17 only — US blockade still active",
             )
             kc3.metric(
-                "Expectational share (primary)",
+                "Inst + Disc (upper bound)",
                 f"{decomp_stats['exp_pct_1d']:.0f}%",
-                "1-day calibration (Apr 17 only)",
+                "Institutional + Discretionary combined ceiling",
             )
         if decomp_stats["calib_6d_ok"]:
             st.caption(
-                f"6-day sensitivity (Apr 17–22): β = {decomp_stats['beta_6d']:.2f} — "
-                f"sign is negative because the April 18 re-closure outlier (20 vessels) dominates OLS. "
-                f"Physical {decomp_stats['phy_pct_6d']:.0f}% / Expectational {decomp_stats['exp_pct_6d']:.0f}% "
-                f"under 6-day window. Not the primary result."
+                f"⚠ 6-day window (Apr 17–22) retired per v3.1 spec — β = {decomp_stats['beta_6d']:.2f} "
+                f"(sign-flipped because Apr 18 re-closure outlier drives OLS negative). "
+                f"Shown in Panel B only to explain exclusion, not as a result."
             )
 
-        st.info(
-            "**Identifying assumption (Panel A):** On Apr 17, Iran declared the strait open. "
-            "Transits that day: 8 vessels — 13% of the 61.7/day pre-crisis baseline. "
-            "All transit loss on Apr 17 is attributed to the expectational channel "
-            "(physical barrier declared lifted; vessels still did not come). "
-            "g() is estimated as a slope through the origin: "
-            "β = transit\\_loss(Apr17) / brent\\_spread(Apr17). "
-            "Single-point calibration — zero degrees of freedom, no OLS.\n\n"
-            "**Why not the 6-day window (Panel B):** April 18, Iran re-closed. "
-            "On that day 20 vessels transited — twice the Apr 17 level, likely vessels "
-            "that had already entered the strait before the re-closure announcement. "
-            "Including Apr 18 in the OLS calibration flips β from +1.92 to −2.00, "
-            "which is economically nonsensical. Panel B exists to make this visible, "
-            "not as an alternative estimate.\n\n"
-            "⚠ **Stability caveat:** All Apr 14–23 observations are real PortWatch data. "
-            "The calibration window is now Apr 17 only. "
-            "g() stability outside that single day remains unverified."
+        st.warning(
+            "**This is an upper bound, not a calibrated estimate.**\n\n"
+            "On Apr 17, Iran declared the strait open. Transits: 8 vessels — 11% of the "
+            f"{baseline_mean:.0f}/day pre-crisis baseline. However, the US blockade was still active "
+            "that day. Iran lifting *Iran's* restriction is not the same as no restriction existing. "
+            "The β = +1.92 figure is a **ceiling on the institutional + discretionary channels combined** "
+            "— it overstates their share because the physical channel may not have been zero.\n\n"
+            "**Proper identification (pending):** M5 JWC discontinuity analysis estimates the "
+            "institutional channel off the listed-area revision date (exogenous administrative event, "
+            "physical danger smooth through the window). M7 out-of-sample test estimates β on the Red Sea "
+            "where the physical channel is small, then applies to Hormuz. Both require war risk premium "
+            "data acquisition (week-one reconnaissance).\n\n"
+            "**What to report now:** An interval — [out-of-sample M7 estimate (pending), "
+            "β=+1.92 ceiling from Apr 17]. The 6-day OLS (Apr 17–22) is **retired** — "
+            "the Apr 18 re-closure surge (20 vessels) flips β negative and contaminates the window."
         )
 
     with st.expander("Data provenance"):
@@ -1621,6 +1787,49 @@ with tab1:
         st.write("**Gap-fill:** Prof. Puma's hormuz_transit_observed.csv (github.com/mjpuma/hormuz)")
         if transit_df is not None:
             st.dataframe(transit_df[transit_df["is_observed"]].tail(10)[["date","transit_vessels","dark"]])
+
+    # ── M8 Non-Recovery R(τ) ─────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### M8 — Non-Recovery R(τ) Since Declared Reopening")
+    with st.spinner("Computing non-recovery ratio..."):
+        nonrec_fig, nonrec_stats = fig_nonrecovery(transit_df, baseline_mean)
+
+    if nonrec_fig is not None:
+        st.plotly_chart(nonrec_fig, use_container_width=True)
+
+        # Summary KPIs
+        nc1, nc2, nc3, nc4 = st.columns(4)
+        nc1.metric(
+            "R(0) — Apr 17",
+            f"{nonrec_stats.get('r_at_0', float('nan')):.3f}",
+            "transit on declared-open day / baseline",
+        )
+        nc2.metric(
+            "τ (current)",
+            f"{nonrec_stats['tau_current']} days",
+            "since Apr 17 declared reopening",
+        )
+        nc3.metric(
+            "τ½ threshold",
+            f"{'Not reached' if nonrec_stats['tau_half'] is None else str(nonrec_stats['tau_half']) + ' days'}",
+            "50% recovery — censored" if nonrec_stats['tau_half'] is None else "reached",
+        )
+        nc4.metric(
+            "July partial return",
+            f"peak R ≈ {nonrec_stats['partial_peak']:.2f}" if nonrec_stats.get('partial_peak') else "—",
+            "if detected by 7-day smoothing",
+        )
+
+        st.caption(
+            "**Primary food security finding:** Transit has not recovered to 50% of the pre-crisis "
+            "baseline at any point since Iran's Apr 17 declared reopening. Any food security "
+            "assessment assuming stock replenishment began April 17 overstates import recovery "
+            "by an order of magnitude. τ½ is censored — the strait is still functionally closed "
+            "for food trade by the PortWatch measure, regardless of legal status. "
+            "Source: IMF PortWatch chokepoint6 · 7-day rolling mean · zero synthetic data."
+        )
+    else:
+        st.info("Non-recovery data not available — transit_df may not extend past Apr 17.")
 
 # ── Tab 2: Vessel Categories ──────────────────────────────────────────────────
 with tab2:
@@ -1813,73 +2022,186 @@ with tab6:
 
 # ── Tab 7: Research Design ────────────────────────────────────────────────────
 with tab7:
-    st.subheader("Research Design — Aggregate Vessel Behavior as a Food-Security Signal")
-    st.caption("For sharing with Jasper Verschuur, Jim Hall, and FAO contacts")
+    st.subheader("Research Design — v3.1 (Aug 28, 2026)")
+    st.caption(
+        "Methods + Policy Forum merged into one paper. Target: Nature Food (primary) / "
+        "Nature Communications (alternate). Policy Forum companion follows after, citing the main paper."
+    )
 
-    # Core research question
+    # Core research question — v3.1 three-channel framing
     st.markdown("### Core Research Question")
     st.markdown(
-        "> During the 2026 Strait of Hormuz closure, does aggregate vessel behavior at the chokepoint "
-        "provide a food-security signal that moves ahead of grain prices, and can that behavior be separated "
-        "into the physical disruption it measures and the priced expectation it reflects?"
+        "> When a maritime chokepoint comes under pressure, how much of the trade that stops is "
+        "**physically prevented**, how much is **contractually or institutionally barred**, and how much "
+        "is **discretionary refusal** — and what does answering that do to food security exposure estimates?"
+    )
+    st.caption(
+        "The three channels behave differently, respond to different instruments, and are currently "
+        "reported as a single number. The food security literature computes exposure share × binary "
+        "closure state. That model is wrong. The delta between published exhaustion numbers and "
+        "corrected numbers is the paper's lead result."
     )
 
     st.divider()
 
-    # Track A analysis status
-    st.markdown("### Track A Analysis Status")
-    st.caption("Single-event causal case study — executable now with live data")
-
-    status_data = {
-        "Analysis": [
-            "Analysis 1 — Food Segment Isolation",
-            "Analysis 2 — SAR Detection Correction",
-            "Analysis 3 — Regime Detection",
-            "Analysis 4 — Apr 17 Decomposition",
-        ],
-        "Status": ["✅ Complete", "⚠️ Partial", "✅ Complete", "✅ Revised"],
-        "Key Finding": [
-            "Dry bulk collapse 74.4%; evasion concentrated in crude tankers, not food cargo",
-            "Detection probability model specified; requires Level-1 SAR scenes from Jasper",
-            "PELT (rbf kernel) recovers 8/8 crisis dates within 5-day tolerance",
-            "Apr 17: 8 vessels (13% of baseline) despite declared opening — backed by live PortWatch data. "
-            "Calibration narrowed to Apr 17 only (1-day); β = +1.92 vsl-days/USD·bbl. "
-            "6-day window (Apr 17–22) shown as sensitivity: Apr 18 re-closure outlier flips β negative (−2.0).",
-        ],
-        "Honest Limitation": [
-            "Food dark fraction is upper bound only — proportional attribution, not per-vessel RCS",
-            "GFW processed API provides AIS/dark counts but not vessel-level RCS for clutter removal",
-            "7 regime labels are based on documented event dates, not PELT output; single event only",
-            "Single-point calibration (Apr 17 only) — zero degrees of freedom, no OLS. "
-            "g() stability outside Apr 17 unverified. Apr 18 included in 6-day sensitivity panel only.",
-        ],
-    }
-    st.dataframe(pd.DataFrame(status_data), use_container_width=True, height=200)
+    # Three-channel explanation
+    st.markdown("### Three-Channel Decomposition (v3.1 Spec §2)")
+    ch1, ch2, ch3 = st.columns(3)
+    with ch1:
+        st.markdown("**🔴 Physical**")
+        st.markdown(
+            "Vessel cannot pass — blockade, mining, seizure, force. "
+            "Relieved by: military/diplomatic action on the belligerent party."
+        )
+    with ch2:
+        st.markdown("**🟡 Institutional**")
+        st.markdown(
+            "Vessel not permitted or not covered — JWC listed-area designation, "
+            "BIMCO CONWARTIME/VOYWAR 2025 war clauses, P&I conditions, flag-state advisories, "
+            "financing refusal. Relieved by: underwriting capacity, listed-area revision, state backstop."
+        )
+    with ch3:
+        st.markdown("**🟠 Discretionary**")
+        st.markdown(
+            "Vessel could sail and is covered; owner or master declines. "
+            "Relieved by: escort, convoy, demonstrated safe passage. "
+            "Does not respond to insurance backstops."
+        )
+    st.info(
+        "**Why the split matters for policy:** An insurance backstop (e.g., Op. Earnest Will "
+        "1987 US reflagging of Kuwaiti tankers) relieves the **institutional** channel and does "
+        "almost nothing for a master who is simply frightened. A naval escort does the reverse. "
+        "Reporting them as one number cannot tell a policymaker which instrument to reach for."
+    )
 
     st.divider()
 
-    # Why this is novel
-    st.markdown("### Why This Is Novel")
+    # Analysis status — updated for v3.1
+    st.markdown("### Analysis Status")
+    st.caption("Primary identification: M5 (JWC discontinuity). Supporting: M7 (premium response). M8 computable now.")
+
+    status_data = {
+        "ID": ["M1", "M3 (SAR)", "M3 (PELT)", "M7 (Apr 17)", "M5 (JWC)", "M8 (R(τ))", "M9 (exhaustion)"],
+        "Analysis": [
+            "Food Segment Isolation",
+            "SAR Detection Correction",
+            "Regime Detection",
+            "Apr 17 Upper Bound",
+            "JWC Institutional Discontinuity (PRIMARY)",
+            "Non-Recovery R(τ)",
+            "Food Security Exhaustion Correction",
+        ],
+        "Status": [
+            "✅ Complete",
+            "⚠️ Partial",
+            "✅ Complete",
+            "⚠️ Ceiling only",
+            "🔲 Data needed",
+            "✅ Live",
+            "🔲 Needs USDA PSD",
+        ],
+        "Key Finding": [
+            "Dry bulk collapse ~81%; evasion concentrated in crude tankers, not food cargo",
+            "Detection probability model specified; requires Level-1 SAR scenes from Jasper",
+            "PELT (rbf kernel) recovers 8/8 crisis dates within 5-day tolerance",
+            "Apr 17: 8 vessels (11% of baseline) despite declared opening. "
+            "β = +1.92 is a CEILING on institutional + discretionary combined. "
+            "6-day OLS window retired — Apr 18 outlier flips β negative.",
+            "JWC listed-area revision = exogenous administrative event; physical danger "
+            "continuous through window. Clean RD identifies institutional step. "
+            "Awaiting: JWC JWLA revision dates for Hormuz 2026 (week-one reconnaissance).",
+            f"τ½ > {(TODAY - IRAN_REOPEN).days} days — CENSORED. Transit has never reached "
+            "50% of baseline since Apr 17. July partial return (R ≈ 0.40) collapsed within 10d. "
+            "R(120d) = 0.01. Live from PortWatch chokepoint6.",
+            "M9 double-counting fix pending: replace 'effective duration = closure + tail' with "
+            "∫[1 - y(t)/b(t)] dt (cumulative import shortfall). Needs USDA PSD + GCC balance sheets.",
+        ],
+        "Honest Limitation": [
+            "Food dark fraction is upper bound only — proportional attribution, not per-vessel RCS",
+            "GFW processed API: AIS/dark counts only; no per-vessel RCS for clutter removal",
+            "Regime labels from documented event dates, not PELT output; single event only",
+            "US blockade still active Apr 17 — Iran lifting Iran's restriction ≠ no restriction. "
+            "β = +1.92 overstates the combined institutional+discretionary share. "
+            "Report as interval: [out-of-sample M7 lower bound (pending), β=+1.92 ceiling].",
+            "JWC listings are endogenous (listed because danger rose); f(danger) must be flexible "
+            "and window must be tight. Listings are anticipated → bias τ toward zero (lower bound).",
+            "7-day rolling mean suppresses daily noise but smooths the July partial-return peak. "
+            "Exact R values depend on smoothing window choice — report under multiple specs.",
+            "GCC food balance sheets require USDA PSD import path + opening stocks. "
+            "Cumulative shortfall calculation is mechanical once the realized path is assembled.",
+        ],
+    }
+    st.dataframe(pd.DataFrame(status_data), use_container_width=True, height=300)
+
+    st.divider()
+
+    # Five-case design
+    st.markdown("### Five-Case Design")
+    st.caption(
+        "Four-corridor design had a structural weakness: Hormuz 2026 and Red Sea 2026 "
+        "share belligerents, underwriters, and fleet → N_effective ≈ 3. Fifth case fixes this."
+    )
+    cases_data = {
+        "Case": [
+            "Hormuz 2026",
+            "Hormuz 1984–88 (Tanker War)",
+            "Red Sea 2023–25",
+            "Black Sea 2022",
+            "Panama 2023–26",
+        ],
+        "Dominant Channel": [
+            "All three — physical + institutional + discretionary",
+            "Physical (high realized danger) — institutional channel stayed OPEN",
+            "Institutional + Discretionary (Bab-el-Mandeb, no formal closure)",
+            "Physical, displaced (binding constraint at Ukrainian ports, not chokepoint)",
+            "Physical, priced by auction (no fear component — control case)",
+        ],
+        "Role in Design": [
+            "Main case. All three channels present. Apr 17: declared open → 11% traffic → non-recovery.",
+            "Strongest single argument: higher physical danger than 2026, traffic continued. "
+            "Difference = institutional channel. US 1987 reflagging (Op. Earnest Will) = state backstop.",
+            "Estimation window for M7 — physical channel small + separately measurable via attack incidence.",
+            "Misattribution case: Bosporus stayed open (Montreux Convention). "
+            "PortWatch cp3 shows ~20% signal at Turkish Straits; actual food disruption was at ports.",
+            "Discretionary control: slots announced by fiat, no fear. Test: do diversions + waiting "
+            "times EXCEED what the announced cut implies? PortWatch cp2 current: ~31/day (flat vs 2025).",
+        ],
+    }
+    st.dataframe(pd.DataFrame(cases_data), use_container_width=True)
+    st.caption(
+        "PortWatch chokepoints: Hormuz=cp6, Bab-el-Mandeb=cp4, Bosporus=cp3, Panama=cp2. "
+        "Hormuz 1984–88 predates PortWatch — requires archival request to Lloyd's/INTERTANKO "
+        "(initiate week one; use last — archive requests take months)."
+    )
+
+    st.divider()
+
+    # Why this is novel — updated to three contributions
+    st.markdown("### Why This Is Novel (v3.1)")
     col_a, col_b, col_c = st.columns(3)
     with col_a:
-        st.markdown("**The intersection is open**")
+        st.markdown("**Three-channel identification**")
         st.markdown(
-            "Vessel-behavioral classification is established in maritime security. "
-            "Food-security early warning is established in crop and price monitoring. "
-            "No paper has joined the two."
+            "M5 JWC discontinuity cleanly identifies the institutional step "
+            "(exogenous administrative event; physical danger smooth through window). "
+            "M6 cross-section identifies discretionary variation across owner types. "
+            "Neither the food security nor the shipping literature has done this jointly."
         )
     with col_b:
-        st.markdown("**The identification window is unique**")
+        st.markdown("**Non-recovery measure τ½**")
         st.markdown(
-            "Apr 17: Iran declared strait open; transits stayed near zero. "
-            "This 5-day window isolates the expectational channel in pure form. "
-            "No prior chokepoint event offers this clean a separation."
+            f"τ½ > {(TODAY - IRAN_REOPEN).days} days — censored. "
+            "The strait was declared open Apr 17. Transit has never reached 50% of baseline. "
+            "Computable as R(τ) = y(t_open+τ)/b(t_open+τ) across all reopening events. "
+            "First systematic measurement of chokepoint non-recovery."
         )
     with col_c:
-        st.markdown("**The behavioral taxonomy is formalized**")
+        st.markdown("**Food security correction**")
         st.markdown(
-            "First empirically-identified regime sequence (PELT changepoints on daily transit data), "
-            "with four novel system-level states that have no individual-vessel analogue."
+            "Published GCC exhaustion numbers assume replenishment began at t_open. "
+            "R(0)=0.11 proves replenishment did not begin. The delta between "
+            "published exhaustion figures and the corrected integral ∫[1−y/b]dt "
+            "leads the abstract — it is the paper's reason for existing."
         )
 
     st.divider()
@@ -1918,8 +2240,8 @@ with tab7:
             st.success(f"Live — {len(pw_data)} days")
         else:
             st.warning("Unavailable — using Windward anchors")
-        st.caption("ArcGIS REST: chokepoint6 (Hormuz)")
-        st.caption("Fields: n_total, n_tanker, n_dry_bulk, n_container")
+        st.caption("ArcGIS REST: chokepoints 2 (Panama), 3 (Bosporus), 4 (Bab-el-Mandeb), 6 (Hormuz)")
+        st.caption("Fields: n_total, n_tanker, n_dry_bulk, n_general_cargo, n_container")
         st.caption("TTL: 12h · updated daily by IMF")
 
     with col2:
@@ -1936,8 +2258,8 @@ with tab7:
                     st.warning("Unavailable — API timeout or no data")
             except Exception:
                 st.warning("Unavailable")
-        st.caption("4Wings v3.0: public-global-sar-presence")
-        st.caption("Dark vessel = vesselId empty string")
+        st.caption("4Wings v3.0: public-global-sar-presence · M4 precondition (not robustness)")
+        st.caption("SAR check gates M4 anticipation lead — fix coverage first (missing ≠ zero-dark)")
         st.caption("Level-1 scenes (per-vessel RCS): pending Jasper")
 
     with col3:
@@ -1955,45 +2277,67 @@ with tab7:
 
     st.divider()
 
-    # What this paper does and does not claim
-    st.markdown("### Scope — What One Event Supports")
+    # Scope — updated for v3.1 merged paper
+    st.markdown("### Scope — What the Five-Case Design Supports")
     col_yes, col_no = st.columns(2)
     with col_yes:
-        st.markdown("**✅ Defensible claims (Track A)**")
+        st.markdown("**✅ Defensible now (live data)**")
         st.markdown("""
-- Transit collapse of ~87.5% (all-vessel) documented — ground truth
-- 7 empirically-identified regimes from PortWatch changepoint detection
+- Transit collapse ~87.5% (all-vessel) — ground truth from PortWatch
+- Seven empirically-identified regimes — PELT changepoints, not asserted
 - Food-relevant fleet collapsed proportionally; evasion concentrated in crude tankers
-- Apr 17 allows physical/expectational decomposition: 1-day calibration (primary, β=+1.92) confirmed on live data; 6-day window shown as sensitivity only (Apr 18 re-closure outlier flips β negative)
-- Cross-correlation with commodity prices at lags 0–14 days — direction and magnitude reported
+- Apr 17 upper bound: β=+1.92 is a ceiling on institutional+discretionary combined
+- M8 R(τ): τ½ > 135 days censored — strait functionally closed for food trade despite declared reopening
+- Cross-commodity cascade: Brent → urea → wheat lag structure, timeline figure
+- Panama control: no excess response to announced slot cuts (no discretionary component)
 """)
     with col_no:
-        st.markdown("**❌ Not supported by one event (Track B)**")
+        st.markdown("**🔲 Pending data acquisition**")
         st.markdown("""
-- Out-of-sample price forecasting — Clark-West stats are in-sample only
-- Cross-event generalization (Black Sea 2022, Red Sea 2024 patterns may differ)
-- Causal attribution of price movements to transit disruption
-- Prediction system for future chokepoint disruptions
+- M5 JWC discontinuity — needs JWLA revision dates + BIMCO clause activation (week-one recon)
+- M6 cross-section (vessel-level) — needs HiFleet: flag, ownership, insurer domicile, positions
+- M7 out-of-sample β — needs war risk premium series (Lloyd's List Intelligence, AMIS)
+- M9 exhaustion correction — needs USDA PSD + GCC balance sheets (most important result)
+- M10 systemic risk mechanism — reframed as market structure argument; needs widened event set
+- M12 movement geometry — needs HiFleet position histories for Hormuz approach box
+- Hormuz 1984–88 — needs Lloyd's/INTERTANKO archive (initiate request week one; long lead time)
+""")
+
+    st.divider()
+    st.markdown("### Open Decisions for Monday (§10)")
+    st.markdown("""
+1. **Working title**: "Chokepoints Are Priced, Not Closed" or "The Paper Closure"? *(decide after M5 returns)*
+2. **Journal**: Nature Food (better audience) or Nature Communications (takes methods more readily)?
+3. **Policy Forum timing**: spec argues *after* the main paper so it cites rather than pre-empts
+4. **FAO/Torero**: approach before or after a draft exists? His Aug 26 post asserts systemic risk from simultaneity without mechanism — that is what M5 + M10 address. Collaboration opening.
+5. **Lloyd's/INTERTANKO archive**: anyone on the team with an archival route into 1984–88 records?
 """)
 
 # ── Tab 8: Cross-Event Comparison ─────────────────────────────────────────────
 import os as _os
 
 with tab8:
-    st.subheader("Cross-Event Comparison — Hormuz / Red Sea / Black Sea")
+    st.subheader("Cross-Event Comparison — Five-Case Design (v3.1)")
     st.caption(
-        "Descriptive comparison of three major chokepoint disruptions using IMF PortWatch data. "
-        "No forecasting claims. Novel categories assessed per-event with explicit data-gap flags."
+        "Descriptive comparison using IMF PortWatch live data. Three-channel interpretation per v3.1 spec. "
+        "Hormuz 1984–88 (archive) and Panama (control) added. "
+        "Static PNGs below = three-event build (pre-v3.1). Interpretation notes updated."
     )
 
     # Data quality caveat
-    with st.expander("⚠️ Data quality notes (expand before presenting)", expanded=False):
+    with st.expander("⚠️ Data quality notes — five-case design (expand before presenting)", expanded=False):
         st.markdown("""
-| Event | Chokepoint | Signal quality | Mechanism |
-|---|---|---|---|
-| **Hormuz 2026** | chokepoint6 | **Strong** — hard blockade, 100% transit collapse | Direct strait closure |
-| **Red Sea 2023-24** | chokepoint4 (Suez) | **Moderate** — gradual diversion, not blockade | Vessel avoidance; rerouting via Cape |
-| **Black Sea 2022** | chokepoint3 (Turkish Straits) | **Weak** — 25% decline; disruption was at ports, not this chokepoint | Port closure; Bosporus remained open under Montreux Convention |
+| Case | Chokepoint | Channel | Signal | Note |
+|---|---|---|---|---|
+| **Hormuz 2026** | cp6 | All three | **Strong** — 87% collapse | Main case |
+| **Hormuz 1984–88** | — (pre-PortWatch) | Physical, high danger | Archive only | Strongest argument: higher danger, traffic continued |
+| **Red Sea 2023–25** | cp4 (Bab-el-Mandeb) | Institutional + Discretionary | **Moderate** — gradual diversion | Estimation window for M7 |
+| **Black Sea 2022** | cp3 (Bosporus) | Physical, displaced | **Misattribution** — Bosporus stayed open | Binding constraint was Ukrainian ports + contracting, not chokepoint |
+| **Panama 2023–26** | cp2 | Physical, priced by auction | **Control** — slots cut by fiat, no fear | Test: do diversions exceed announced cut mechanically? |
+
+**Black Sea correction:** The chokepoint3 signal (~20%) understates the food disruption because the Bosphorus stayed open under the Montreux Convention. The binding constraint was at Ukrainian ports and in contracting — not at this chokepoint. Do not present this as a "chokepoint closure" case; it is a misattribution case showing that the method needs to be applied at the right chokepoint.
+
+**Panama interpretation:** Panama already rations by auction price — slot allocation is transparent and fear-free. The correct test is NOT whether transit counts track announced cuts (nearly circular; the Authority sets the number by fiat). The test: do waiting times, auction premia, and diversions to Suez/Cape exceed what the slot reduction mechanically implies? Prediction: they do not (no fear component). Current PortWatch cp2 data shows ~31/day, essentially flat vs 2025 baseline of 31.1/day.
 
 *PortWatch does not provide flag-state or route-level data. Novel categories requiring those fields are marked DATA GAP.*
 """)
@@ -2071,23 +2415,27 @@ with tab8:
             st.warning(f"Figure not found: {fig_def['file']}")
         st.divider()
 
-    # Honest status report
-    st.markdown("### Status Report — What Is and Is Not Ready")
+    # Status report — updated for five-case design
+    st.markdown("### Status Report — Five-Case Design")
     col_ready, col_gap = st.columns(2)
     with col_ready:
-        st.markdown("**✅ Ready for Zoom**")
+        st.markdown("**✅ Live / computable**")
         st.markdown("""
-- Normalized trajectory comparison (Panel A) — all 3 events, live PortWatch data
-- PELT regime prevalence (Panel B) — validated against Hormuz crisis dates
-- Transition-speed comparison (Panel C) — Hormuz is clear outlier
-- Novel category matrix (Panel D) — honest ✓/✗/— per event
-- Bypass capacity (Panel E) — uses confirmed values from UNCTAD/World Bank
+- Normalized trajectory (Panel A) — Hormuz, Red Sea, Black Sea via live PortWatch
+- PELT regime prevalence (Panel B) — Hormuz validated; Red Sea/Black Sea included
+- Transition-speed comparison (Panel C) — Hormuz clear outlier on both axes
+- Novel category matrix (Panel D) — honest ✓/✗/— per event, DATA GAP flagged
+- Panama control (cp2): current ~31/day, flat vs 2025 baseline — no fear premium visible
+- M8 R(τ): Hormuz τ½ > 135d censored; Red Sea τ½ computable from cp4 data
+- M10 correlation claim RETIRED: five non-independent cases → reframed as market structure argument
 """)
     with col_gap:
-        st.markdown("**— Not available from PortWatch alone**")
+        st.markdown("**🔲 Needs external data**")
         st.markdown("""
-- Flag-state stratification: requires AIS vessel registry (not in PortWatch API)
-- Corridor topology shift: requires spatial route data (Verschuur's MARIN/FleetMon)
-- Food-segment isolation for Red Sea / Black Sea: PortWatch cargo fields not available for historical events
-- Self-deterrence analog for Red Sea / Black Sea: no clean declared-open moment in either event
+- Panama auction prices + queue length (Canal Authority) — needed for M11 robustness
+- Hormuz 1984–88 traffic + premium series (Lloyd's/INTERTANKO archive)
+- Flag-state stratification (HiFleet: ownership, insurer domicile, positions)
+- Food-segment isolation for Red Sea / Black Sea (PortWatch cargo fields unavailable historically)
+- Movement geometry windows: Apr 17–18 + July 2026 (HiFleet position histories)
+- SAR scene coverage separation (Level-1 files from Jasper — M4 precondition)
 """)
