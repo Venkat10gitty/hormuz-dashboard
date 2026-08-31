@@ -1431,6 +1431,128 @@ def fig_nonrecovery(transit_df, baseline, t_open=None):
     }
 
 
+def fig_panama_baseline(panama_df):
+    """Panama Canal (chokepoint2) pre-cut baseline panel.
+
+    Shows the 2025 full-year baseline and 2026 through today.  Annotates the
+    two announced slot reductions as FUTURE events (Sept 3: 36→34/day; Sept 15:
+    →32/day).  Does NOT present a "no-response" finding — the cuts have not yet
+    taken effect.  The chart's sole purpose is to document the pre-cut baseline
+    so that any post-cut change can be assessed against it.
+
+    Source: IMF PortWatch chokepoint2 (Panama Canal) · live ArcGIS REST · zero synthetic data.
+    """
+    if panama_df is None or panama_df.empty:
+        return None, {}
+
+    d = panama_df.sort_values("date").copy()
+
+    # Split into 2025 baseline and 2026 observation period
+    cut_year = pd.Timestamp("2026-01-01")
+    d_2025 = d[d["date"] < cut_year]
+    d_2026 = d[d["date"] >= cut_year]
+
+    baseline_2025 = float(d_2025["n_total"].mean()) if len(d_2025) > 0 else 31.1
+
+    # 7-day rolling mean for both periods
+    d["rolling_n"] = d["n_total"].rolling(7, min_periods=3).mean()
+    d_2025r = d[d["date"] < cut_year]
+    d_2026r = d[d["date"] >= cut_year]
+
+    # Announced slot levels (as of Aug 2026 Panama Canal Authority advisory)
+    announced_cuts = [
+        (pd.Timestamp("2026-09-03"), 34, "Sept 3: 36 → 34 slots/day"),
+        (pd.Timestamp("2026-09-15"), 32, "Sept 15: → 32 slots/day"),
+    ]
+
+    fig = go.Figure()
+
+    # 2025 baseline ribbon
+    fig.add_trace(go.Scatter(
+        x=d_2025r["date"], y=d_2025r["rolling_n"],
+        mode="lines",
+        name="2025 baseline (7-day rolling mean)",
+        line=dict(color="#ADB5BD", width=1.8, dash="dot"),
+        hovertemplate="%{x|%b %d}: %{y:.1f}/day<extra>2025 baseline</extra>",
+    ))
+
+    # 2026 observed
+    fig.add_trace(go.Scatter(
+        x=d_2026r["date"], y=d_2026r["rolling_n"],
+        mode="lines",
+        name="2026 observed (7-day rolling mean)",
+        line=dict(color="#2A9D8F", width=2.5),
+        fill="tozeroy",
+        fillcolor="rgba(42,157,143,0.08)",
+        hovertemplate="%{x|%b %d}: %{y:.1f}/day<extra>2026</extra>",
+    ))
+
+    # 2025 annual mean reference line
+    fig.add_hline(
+        y=baseline_2025,
+        line_dash="dash", line_color="#6C757D", line_width=1.2,
+        annotation_text=f"2025 mean = {baseline_2025:.1f}/day",
+        annotation_position="top left",
+        annotation_font=dict(size=9, color="#6C757D"),
+    )
+
+    # Announced slot cut lines — labeled FUTURE/ANNOUNCED, not yet in effect
+    slot_colors = ["#E9C46A", "#E76F51"]
+    for (cut_date, cut_level, cut_label), color in zip(announced_cuts, slot_colors):
+        # Only draw if the cut date is in the future relative to the last data point
+        last_data = d["date"].max()
+        if cut_date >= last_data - pd.Timedelta(days=3):
+            # Future — draw as dashed with "ANNOUNCED" label
+            fig.add_vline(
+                x=cut_date.strftime("%Y-%m-%d"),
+                line_dash="dash", line_color=color, line_width=1.5, opacity=0.7,
+            )
+            fig.add_annotation(
+                x=cut_date.strftime("%Y-%m-%d"),
+                yref="paper", y=0.88,
+                text=f"⏳ {cut_label}<br>(announced, future)",
+                showarrow=False,
+                font=dict(size=8, color=color),
+                bgcolor="rgba(255,255,255,0.82)",
+                xanchor="left",
+            )
+        # Mechanical cut level as dashed horizontal reference
+        fig.add_hline(
+            y=cut_level,
+            line_dash="longdash", line_color=color, line_width=1.0, opacity=0.55,
+            annotation_text=f"Announced: {cut_level}/day",
+            annotation_position="top right",
+            annotation_font=dict(size=8, color=color),
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=340,
+        title=dict(
+            text=(
+                "Panama Canal (cp2) — Pre-Cut Baseline, Aug 2026"
+                "<br><sup>⚠ Announced slot reductions (Sept 3, Sept 15) not yet in effect. "
+                "This chart documents the pre-cut baseline. The test — whether responses "
+                "exceed the mechanical slot reduction — requires post-cut data.</sup>"
+            ),
+            font=dict(size=12),
+        ),
+        xaxis_title="Date",
+        yaxis_title="Daily transits (7-day rolling mean)",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        hovermode="x unified",
+    )
+
+    stats = {
+        "baseline_2025": baseline_2025,
+        "mean_2026": float(d_2026["n_total"].mean()) if len(d_2026) > 0 else float("nan"),
+        "n_2025_days": len(d_2025),
+        "n_2026_days": len(d_2026),
+        "last_date": str(d["date"].max().date()),
+    }
+    return fig, stats
+
+
 def fig_commodity(price_df, date_range):
     mask = (price_df["date"] >= pd.Timestamp(str(date_range[0]))) & \
            (price_df["date"] <= pd.Timestamp(str(date_range[1])))
@@ -2154,7 +2276,8 @@ with tab7:
             "Physical (high realized danger) — institutional channel stayed OPEN",
             "Institutional + Discretionary (Bab-el-Mandeb, no formal closure)",
             "Physical, displaced (binding constraint at Ukrainian ports, not chokepoint)",
-            "Physical, priced by auction (no fear component — control case)",
+            "Physical, priced by auction — hypothesis: no discretionary component "
+            "(test requires post-Sept 3 post-Sept 15 data; cuts not yet in effect)",
         ],
         "Role in Design": [
             "Main case. All three channels present. Apr 17: declared open → 11% traffic → non-recovery.",
@@ -2163,8 +2286,12 @@ with tab7:
             "Estimation window for M7 — physical channel small + separately measurable via attack incidence.",
             "Misattribution case: Bosporus stayed open (Montreux Convention). "
             "PortWatch cp3 shows ~20% signal at Turkish Straits; actual food disruption was at ports.",
-            "Discretionary control: slots announced by fiat, no fear. Test: do diversions + waiting "
-            "times EXCEED what the announced cut implies? PortWatch cp2 current: ~31/day (flat vs 2025).",
+            "Discretionary control candidate. Slots set by administrative fiat; transparent price rationing "
+            "(auction), no fear premium. Pre-cut baseline established: cp2 ~31/day (2025 annual mean: 31.1/day). "
+            "Panama Canal Authority announced cuts: 36→34 transits/day starting Sept 3, 2026; →32 starting Sept 15. "
+            "Actual test — whether waiting times, auction premia, and diversions to Suez/Cape exceed "
+            "what the mechanical slot reduction implies — requires post-cut data. "
+            "Prediction: they will not, because no one is afraid of Panama.",
         ],
     }
     st.dataframe(pd.DataFrame(cases_data), use_container_width=True)
@@ -2289,7 +2416,8 @@ with tab7:
 - Apr 17 upper bound: β=+1.92 is a ceiling on institutional+discretionary combined
 - M8 R(τ): τ½ > 135 days censored — strait functionally closed for food trade despite declared reopening
 - Cross-commodity cascade: Brent → urea → wheat lag structure, timeline figure
-- Panama control: no excess response to announced slot cuts (no discretionary component)
+- Panama (cp2): pre-cut baseline established — 31/day (2025: 31.1/day). Announced reductions
+  take effect Sept 3 (36→34) and Sept 15 (→32). Test requires post-cut data.
 """)
     with col_no:
         st.markdown("**🔲 Pending data acquisition**")
@@ -2320,8 +2448,8 @@ with tab8:
     st.subheader("Cross-Event Comparison — Five-Case Design (v3.1)")
     st.caption(
         "Descriptive comparison using IMF PortWatch live data. Three-channel interpretation per v3.1 spec. "
-        "Hormuz 1984–88 (archive) and Panama (control) added. "
-        "Static PNGs below = three-event build (pre-v3.1). Interpretation notes updated."
+        "Hormuz 1984–88 (archive, pending) and Panama (pre-cut baseline below) added to five-case design. "
+        "Static PNGs = three-event build (pre-v3.1 revision); interpretation notes updated above."
     )
 
     # Data quality caveat
@@ -2337,7 +2465,7 @@ with tab8:
 
 **Black Sea correction:** The chokepoint3 signal (~20%) understates the food disruption because the Bosphorus stayed open under the Montreux Convention. The binding constraint was at Ukrainian ports and in contracting — not at this chokepoint. Do not present this as a "chokepoint closure" case; it is a misattribution case showing that the method needs to be applied at the right chokepoint.
 
-**Panama interpretation:** Panama already rations by auction price — slot allocation is transparent and fear-free. The correct test is NOT whether transit counts track announced cuts (nearly circular; the Authority sets the number by fiat). The test: do waiting times, auction premia, and diversions to Suez/Cape exceed what the slot reduction mechanically implies? Prediction: they do not (no fear component). Current PortWatch cp2 data shows ~31/day, essentially flat vs 2025 baseline of 31.1/day.
+**Panama — pre-cut baseline period (not yet a completed test):** The Panama Canal Authority announced slot reductions: 36→34/day starting Sept 3, 2026; →32/day starting Sept 15, driven by El Niño rainfall below expectations. As of this data pull (Aug 31), the cuts have not taken effect — what PortWatch cp2 shows (~31/day through Aug) is the PRE-CUT BASELINE, not a behavioral response. The 2025 annual mean was 31.1/day; 2026 through August is 31.5/day — essentially flat. The actual test (whether waiting times, auction premia, and diversions to Suez/Cape EXCEED what the mechanical slot reduction implies) requires data after Sept 3 and Sept 15. Prediction: responses will not exceed the mechanical cut, because Panama is price-rationed by transparent auction (no fear premium), but this is a hypothesis until the data arrives. Do not present the current flat transit as evidence of "no discretionary component" — that claim requires post-cut comparison.
 
 *PortWatch does not provide flag-state or route-level data. Novel categories requiring those fields are marked DATA GAP.*
 """)
@@ -2425,17 +2553,63 @@ with tab8:
 - PELT regime prevalence (Panel B) — Hormuz validated; Red Sea/Black Sea included
 - Transition-speed comparison (Panel C) — Hormuz clear outlier on both axes
 - Novel category matrix (Panel D) — honest ✓/✗/— per event, DATA GAP flagged
-- Panama control (cp2): current ~31/day, flat vs 2025 baseline — no fear premium visible
+- Panama (cp2): pre-cut baseline documented — 31/day, flat vs 2025 (31.1/day). Sept 3/15 cuts not yet in effect; test pending
 - M8 R(τ): Hormuz τ½ > 135d censored; Red Sea τ½ computable from cp4 data
 - M10 correlation claim RETIRED: five non-independent cases → reframed as market structure argument
 """)
     with col_gap:
         st.markdown("**🔲 Needs external data**")
         st.markdown("""
-- Panama auction prices + queue length (Canal Authority) — needed for M11 robustness
+- Panama auction prices + queue length (Canal Authority) — needed for M11 post-cut test
+- Panama post-cut transit data (after Sept 3 and Sept 15) — needed for actual test result
 - Hormuz 1984–88 traffic + premium series (Lloyd's/INTERTANKO archive)
 - Flag-state stratification (HiFleet: ownership, insurer domicile, positions)
 - Food-segment isolation for Red Sea / Black Sea (PortWatch cargo fields unavailable historically)
 - Movement geometry windows: Apr 17–18 + July 2026 (HiFleet position histories)
 - SAR scene coverage separation (Level-1 files from Jasper — M4 precondition)
 """)
+
+    # ── Panama live panel ──────────────────────────────────────────────────────
+    st.divider()
+    st.markdown("### Panama Canal (cp2) — Pre-Cut Baseline")
+    st.caption(
+        "Establishes the comparison baseline before the Panama Canal Authority's announced slot "
+        "reductions. The actual test of whether responses exceed the mechanical cut requires "
+        "post-Sept 3 and post-Sept 15 data. Do not interpret flat pre-cut transit as confirming "
+        "the no-discretionary-component hypothesis — that claim requires post-cut comparison."
+    )
+
+    with st.spinner("Loading Panama Canal PortWatch data..."):
+        panama_df, _ = get_historical_transit("chokepoint2", "2025-01-01", end_str)
+
+    if panama_df is not None and not panama_df.empty:
+        # Rename n_total column if needed
+        _pc = panama_df.copy()
+        if "n_total" not in _pc.columns and "transit_vessels" in _pc.columns:
+            _pc = _pc.rename(columns={"transit_vessels": "n_total"})
+        elif "n_total" not in _pc.columns:
+            _pc["n_total"] = _pc.iloc[:, 1]  # fallback
+
+        panama_fig, panama_stats = fig_panama_baseline(_pc)
+        if panama_fig is not None:
+            st.plotly_chart(panama_fig, use_container_width=True)
+
+            pk1, pk2, pk3, pk4 = st.columns(4)
+            pk1.metric("2025 mean (baseline)", f"{panama_stats['baseline_2025']:.1f}/day",
+                       f"{panama_stats['n_2025_days']} days")
+            pk2.metric("2026 mean (pre-cut)", f"{panama_stats['mean_2026']:.1f}/day",
+                       f"{panama_stats['n_2026_days']} days · through {panama_stats['last_date']}")
+            pk3.metric("Sept 3 announced cut", "36 → 34/day", "El Niño rainfall — future")
+            pk4.metric("Sept 15 announced cut", "→ 32/day", "future — test pending")
+
+            st.warning(
+                "⚠ **Pre-period baseline only.** The slot cuts have not yet taken effect. "
+                "The correct test (M11 robustness): do waiting times, auction premia, and diversions "
+                "to Suez or the Cape EXCEED what the 36→34→32 reduction mechanically implies? "
+                "Predict: no, because Panama pricing is transparent and fear-free. "
+                "But this is a hypothesis. The evidence arrives after Sept 15."
+            )
+        else:
+            st.info("Panama chart could not be rendered from PortWatch data.")
+    else:
+        st.warning("Panama Canal (chokepoint2) data unavailable from PortWatch.")
