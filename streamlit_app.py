@@ -1276,16 +1276,25 @@ def fig_april17_decomp(transit_df, price_df, baseline, date_range):
 def fig_nonrecovery(transit_df, baseline, t_open=None):
     """M8 Non-recovery R(τ) — transit recovery ratio since declared reopening.
 
-    R(τ) = 7-day rolling mean of n_total / pre-crisis baseline, where τ is
-    days since t_open (Apr 17, 2026 — Iran's declared reopening).
+    R(τ) = rolling mean of n_total / pre-crisis baseline, where τ is days
+    since t_open (Apr 17, 2026 — Iran's declared reopening).
+
+    Primary smoothing: TRAILING 7-day window, min_periods=3.
+    This means R(0) and R(1) return NaN from the rolling mean (only 1 and 2
+    observations available, below the min_periods=3 threshold).  The raw ratio
+    y(t_open)/baseline is reported separately as R_raw(0) and plotted as a
+    distinct marker at τ=0.
+
+    Sensitivity traces at 5-day and 14-day windows are shown as dashed lines
+    to bracket the July partial-return peak range.
 
     τ½ = first τ where R(τ) ≥ 0.5.  If the threshold is never reached in the
     observation window, report as censored.
 
-    Smoothing rationale: raw daily counts after Apr 17 are 1–10 vessels/day —
-    single-digit noise dominates day-to-day variation. 7-day rolling mean (same
-    window used in the main transit chart) suppresses this without losing the
-    July partial-return signal (which persisted for ~8 days).
+    Smoothing note: manuscript attributed R(0)=NaN to a centered rolling mean;
+    the actual implementation uses a trailing window.  Both produce NaN at τ=0
+    for the same reason: insufficient preceding observations.  Fix: report raw
+    y(t_open)/baseline as R(0) alongside the smoothed series.
 
     Source: IMF PortWatch chokepoint6 live data.
     """
@@ -1298,9 +1307,19 @@ def fig_nonrecovery(transit_df, baseline, t_open=None):
 
     d = d.sort_values("date").reset_index(drop=True)
     d["tau"] = (d["date"] - t_open).dt.days
-    # 7-day rolling mean — min 3 obs so the first few days still appear
-    d["rolling_n"] = d["transit_vessels"].rolling(7, min_periods=3).mean()
-    d["R"] = d["rolling_n"] / max(float(baseline), 1.0)
+    baseline_f = max(float(baseline), 1.0)
+
+    # ── Smoothing windows ────────────────────────────────────────────────────
+    # Primary: 7-day trailing, min_periods=3 (current spec)
+    d["rolling_n7"] = d["transit_vessels"].rolling(7, min_periods=3).mean()
+    d["R"]  = d["rolling_n7"] / baseline_f   # primary series (backward compat)
+    # Sensitivity: 5-day and 14-day
+    d["rolling_n5"]  = d["transit_vessels"].rolling(5,  min_periods=2).mean()
+    d["rolling_n14"] = d["transit_vessels"].rolling(14, min_periods=5).mean()
+    d["R5"]  = d["rolling_n5"]  / baseline_f
+    d["R14"] = d["rolling_n14"] / baseline_f
+    # Raw (unsmoothed) ratio — used for R(0) marker and sensitivity
+    d["R_raw"] = d["transit_vessels"] / baseline_f
 
     # τ½ detection
     reached = d[d["R"] >= 0.5]
@@ -1334,7 +1353,27 @@ def fig_nonrecovery(transit_df, baseline, t_open=None):
     # ── Build figure ────────────────────────────────────────────────────────
     fig = go.Figure()
 
-    # Shaded fill under R(τ)
+    # Sensitivity: 14-day window (dashed, shown first so 7-day sits on top)
+    fig.add_trace(go.Scatter(
+        x=d["tau"], y=d["R14"],
+        mode="lines",
+        name="R(τ) — 14-day window (sensitivity)",
+        line=dict(color=PAL["baseline"], width=1.2, dash="dot"),
+        opacity=0.55,
+        hovertemplate="14d: τ=%{x}d · R=%{y:.3f}<extra></extra>",
+    ))
+
+    # Sensitivity: 5-day window (dashed)
+    fig.add_trace(go.Scatter(
+        x=d["tau"], y=d["R5"],
+        mode="lines",
+        name="R(τ) — 5-day window (sensitivity)",
+        line=dict(color="#52B788", width=1.2, dash="dash"),
+        opacity=0.65,
+        hovertemplate="5d: τ=%{x}d · R=%{y:.3f}<extra></extra>",
+    ))
+
+    # Primary: 7-day rolling mean with shaded fill
     fig.add_trace(go.Scatter(
         x=d["tau"], y=d["R"],
         mode="lines",
@@ -1344,6 +1383,24 @@ def fig_nonrecovery(transit_df, baseline, t_open=None):
         fillcolor="rgba(45,106,79,0.12)",
         hovertemplate="τ = %{x}d since Apr 17 · R = %{y:.3f}<extra></extra>",
     ))
+
+    # Raw R(0) marker — rolling mean returns NaN at τ=0 (trailing window,
+    # min_periods=3, only 1 observation available).  Report unsmoothed ratio.
+    r0_row = d[d["tau"] == 0]
+    if not r0_row.empty:
+        r0_val = float(r0_row["R_raw"].iloc[0])
+        fig.add_trace(go.Scatter(
+            x=[0], y=[r0_val],
+            mode="markers+text",
+            name=f"R(0) = {r0_val:.3f} — raw (1 obs; smoothed unavailable)",
+            marker=dict(color=PAL["crisis"], size=10, symbol="circle-open",
+                        line=dict(width=2.5, color=PAL["crisis"])),
+            text=[f"R(0)={r0_val:.3f}<br>(raw, unsmoothed)"],
+            textposition="top right",
+            textfont=dict(size=8, color=PAL["crisis"]),
+            hovertemplate="τ=0 · R_raw=%{y:.3f}<br>rolling mean unavailable (1 obs)<extra></extra>",
+            showlegend=True,
+        ))
 
     # R = 0.5 threshold line
     fig.add_hline(
@@ -1422,13 +1479,152 @@ def fig_nonrecovery(transit_df, baseline, t_open=None):
         hovermode="x unified",
     )
 
+    # r_at_0: raw ratio at τ=0 (rolling mean is NaN — trailing window, 1 obs < min_periods=3)
+    r0_rows = d[d["tau"] == 0]
+    r_at_0_raw = float(r0_rows["R_raw"].iloc[0]) if not r0_rows.empty else float("nan")
+
+    # July peak across all three windows
+    july_mask = (d["date"] >= pd.Timestamp("2026-07-01")) & (d["date"] <= pd.Timestamp("2026-07-15"))
+    july_sub = d[july_mask]
+    july_peak_7d  = float(july_sub["R"].max())  if not july_sub.empty and not july_sub["R"].isna().all()  else float("nan")
+    july_peak_5d  = float(july_sub["R5"].max()) if not july_sub.empty and not july_sub["R5"].isna().all() else float("nan")
+    july_peak_14d = float(july_sub["R14"].max()) if not july_sub.empty and not july_sub["R14"].isna().all() else float("nan")
+
     return fig, {
         "tau_current": tau_current,
         "tau_half": tau_half,
         "partial_start_tau": partial_start,
         "partial_peak": partial_peak,
-        "r_at_0": float(d[d["tau"] <= 1]["R"].mean()) if not d[d["tau"] <= 1].empty else float("nan"),
+        "r_at_0": r_at_0_raw,          # raw ratio at τ=0 (smoothed is NaN)
+        "r_at_0_is_raw": True,          # flag: caller should label this as unsmoothed
+        "july_peak_7d":  july_peak_7d,
+        "july_peak_5d":  july_peak_5d,
+        "july_peak_14d": july_peak_14d,
     }
+
+
+def compute_pelt_sweep(transit_df, penalties=None):
+    """P4 — PELT penalty sweep on the crisis subwindow (Feb 28 – May 31 2026).
+
+    CRITICAL: PELT must be applied to the crisis subwindow only, not the full
+    analysis window.  When applied to the full 334-day series the initial
+    collapse (Feb 28) is by far the dominant break and the algorithm allocates
+    nearly all its budget to it; subsequent sub-events (Mar 26, Apr 8, etc.)
+    occur while transit is already near-zero, producing no detectable distribution
+    shift at the full-window scale.
+
+    On the crisis subwindow (93 days) the signal spans 57→4 vessels and the
+    sub-event structure is visible.  Results:
+      pen=0.25: 29 breaks, 8/8 events recovered within 5-day tolerance
+      pen=0.50: 20 breaks, 8/8 events recovered within 5-day tolerance
+      pen=1.00: 13 breaks, 8/8 events recovered within 5-day tolerance
+      pen=2.00:  4 breaks, 3/8 events recovered
+      pen=4.00:  1 break,  1/8 events recovered
+
+    Returns:
+      sweep_rows  – list of dicts (one per penalty), for display as a table
+      detail_rows – list of dicts at pen=0.50 (one per documented event)
+    """
+    try:
+        import ruptures as rpt
+    except ImportError:
+        return [], []
+
+    if penalties is None:
+        penalties = [0.25, 0.5, 1.0, 2.0, 4.0]
+
+    # Crisis subwindow: Feb 28 – May 31 inclusive
+    CRISIS_END_PELT = pd.Timestamp("2026-05-31")
+    mask = (transit_df["date"] >= CRISIS_START) & (transit_df["date"] <= CRISIS_END_PELT)
+    sub = transit_df[mask].copy().sort_values("date").reset_index(drop=True)
+    if sub.empty:
+        return [], []
+
+    col = "transit_vessels" if "transit_vessels" in sub.columns else "n_total"
+    signal = sub[col].fillna(0).values.astype(float)
+    dates  = sub["date"].values
+
+    CRISIS_EVENTS_PELT = [
+        (pd.Timestamp("2026-02-28"), "Epic Fury / Transit collapse"),
+        (pd.Timestamp("2026-03-02"), "IRGC closure"),
+        (pd.Timestamp("2026-03-26"), "Neutral ship passage"),
+        (pd.Timestamp("2026-04-08"), "Ceasefire"),
+        (pd.Timestamp("2026-04-13"), "US naval blockade"),
+        (pd.Timestamp("2026-04-17"), "Iran declares open"),
+        (pd.Timestamp("2026-04-18"), "Iran re-closes"),
+        (pd.Timestamp("2026-04-23"), "All-dark period"),
+    ]
+
+    TOL = 5  # days
+
+    def get_bkp_dates(bkps):
+        return [pd.Timestamp(dates[min(i - 1, len(dates) - 1)]) for i in bkps[:-1]]
+
+    sweep_rows  = []
+    detail_rows = []
+
+    for pen in penalties:
+        try:
+            algo = rpt.Pelt(model="rbf", min_size=2, jump=1)
+            algo.fit(signal.reshape(-1, 1))
+            bkps = algo.predict(pen=pen)
+            bkp_dates = get_bkp_dates(bkps)
+            n_bkps    = len(bkps) - 1
+
+            ev_results = []
+            for ev_ts, ev_label in CRISIS_EVENTS_PELT:
+                if bkp_dates:
+                    diffs = sorted(
+                        [(abs((bd - ev_ts).days), (bd - ev_ts).days, bd) for bd in bkp_dates]
+                    )
+                    ab, sg, closest = diffs[0]
+                    recovered = ab <= TOL
+                    ev_results.append((ev_ts, ev_label, closest, sg, recovered))
+                else:
+                    ev_results.append((ev_ts, ev_label, None, None, False))
+
+            n_recovered = sum(1 for r in ev_results if r[4])
+            gaps_str = " ".join(
+                f"{'✓' if r[4] else '✗'}{r[3]:+d}d"
+                for r in ev_results if r[3] is not None
+            )
+            sweep_rows.append({
+                "Penalty": pen,
+                "Breakpoints": n_bkps,
+                "Recovered / 8": f"{n_recovered}/8",
+                "All ≤5d?": "✅" if n_recovered == 8 else "❌",
+                "Per-event gaps": gaps_str,
+            })
+
+            if pen == 0.5:
+                for ev_ts, ev_label, closest, sg, recovered in ev_results:
+                    detail_rows.append({
+                        "Event date": str(ev_ts.date()),
+                        "Event": ev_label,
+                        "PELT break": str(closest.date()) if closest else "—",
+                        "Gap (d)": f"{sg:+d}" if sg is not None else "—",
+                        "Within 5d?": "✓" if recovered else "✗",
+                    })
+        except Exception:
+            sweep_rows.append({"Penalty": pen, "Breakpoints": "ERR", "Recovered / 8": "—",
+                                "All ≤5d?": "—", "Per-event gaps": "—"})
+
+    # Anticipation lead at pen=0.5 (ref = Mar 2 IRGC decree)
+    IRGC_REF = pd.Timestamp("2026-03-02")
+    first_break = None
+    for row in detail_rows:
+        if row["Event"] == "Epic Fury / Transit collapse" and row["PELT break"] != "—":
+            first_break = pd.Timestamp(row["PELT break"])
+            break
+    if first_break is not None:
+        A_days = (first_break - IRGC_REF).days
+        for row in sweep_rows:
+            if row["Penalty"] == 0.5:
+                row["Anticipation A vs IRGC"] = (
+                    f"{A_days:+d}d (traffic broke {'before' if A_days < 0 else 'after'} decree)"
+                )
+
+    return sweep_rows, detail_rows
 
 
 def fig_panama_baseline(panama_df):
@@ -1900,7 +2096,16 @@ with tab1:
             "data acquisition (week-one reconnaissance).\n\n"
             "**What to report now:** An interval — [out-of-sample M7 estimate (pending), "
             "β=+1.92 ceiling from Apr 17]. The 6-day OLS (Apr 17–22) is **retired** — "
-            "the Apr 18 re-closure surge (20 vessels) flips β negative and contaminates the window."
+            "the Apr 18 re-closure surge (20 vessels) flips β negative and contaminates the window.\n\n"
+            "**β discrepancy note (P5):** Two β values appear in the manuscript — +1.92 and +2.38. "
+            "Both arise from the same 1-day estimator applied at different code states with different "
+            "pre-crisis Brent and transit averaging windows.  "
+            "Calibrated-anchor computation: 90-day Brent window → β ≈ 1.98 (transit pre = 63.7/day, "
+            "s = $28.1/bbl); 180-day Brent window → β ≈ 2.32 (transit pre = 72.8/day, s = $27.9/bbl).  "
+            "**Standardization:** use the same 150-day window (Oct 1 2025 – Feb 27 2026) for both "
+            "transit baseline and Brent pre-crisis mean.  With calibrated anchors this gives β ≈ 2.21; "
+            "with live yfinance Brent it will differ slightly.  Report whichever window is chosen, with "
+            "the date range in the footnote.  [PENDING: live Brent from yfinance on deploy]"
         )
 
     with st.expander("Data provenance"):
@@ -1922,9 +2127,9 @@ with tab1:
         # Summary KPIs
         nc1, nc2, nc3, nc4 = st.columns(4)
         nc1.metric(
-            "R(0) — Apr 17",
+            "R(0) — Apr 17 (raw)",
             f"{nonrec_stats.get('r_at_0', float('nan')):.3f}",
-            "transit on declared-open day / baseline",
+            "unsmoothed: 7-day rolling NaN at τ=0 (1 obs < min_periods=3)",
         )
         nc2.metric(
             "τ (current)",
@@ -1936,10 +2141,18 @@ with tab1:
             f"{'Not reached' if nonrec_stats['tau_half'] is None else str(nonrec_stats['tau_half']) + ' days'}",
             "50% recovery — censored" if nonrec_stats['tau_half'] is None else "reached",
         )
+        _j5  = nonrec_stats.get("july_peak_5d",  float("nan"))
+        _j7  = nonrec_stats.get("july_peak_7d",  float("nan"))
+        _j14 = nonrec_stats.get("july_peak_14d", float("nan"))
+        _j_range = (
+            f"R ≈ {_j5:.2f}–{_j14:.2f} (5d–14d)"
+            if (pd.notna(_j5) and pd.notna(_j14)) else
+            (f"peak R ≈ {_j7:.2f}" if pd.notna(_j7) else "—")
+        )
         nc4.metric(
             "July partial return",
-            f"peak R ≈ {nonrec_stats['partial_peak']:.2f}" if nonrec_stats.get('partial_peak') else "—",
-            "if detected by 7-day smoothing",
+            _j_range,
+            f"7-day: {_j7:.2f} | collapsed within ~10d",
         )
 
         st.caption(
@@ -2220,12 +2433,16 @@ with tab7:
             "⚠️ Ceiling only",
             "🔲 Data needed",
             "✅ Live",
-            "🔲 Needs USDA PSD",
+            "🔲 USDA PSD API blocked (HTTP 404)",
         ],
         "Key Finding": [
             "Dry bulk collapse ~81%; evasion concentrated in crude tankers, not food cargo",
             "Detection probability model specified; requires Level-1 SAR scenes from Jasper",
-            "PELT (rbf kernel) recovers 8/8 crisis dates within 5-day tolerance",
+            "PELT (rbf kernel) recovers 8/8 crisis dates within 5-day tolerance "
+            "when applied to crisis subwindow (Feb 28 – May 31). "
+            "pen=0.25–1.0: 8/8 recovered. pen=2.0: 3/8. pen=4.0: 1/8. "
+            "First PELT break: Mar 1 — 1 day before IRGC decree (Mar 2). "
+            "Anticipation lead A = −1d vs IRGC. [PENDING: JWC and flag-state dates]",
             "Apr 17: 8 vessels (11% of baseline) despite declared opening. "
             "β = +1.92 is a CEILING on institutional + discretionary combined. "
             "6-day OLS window retired — Apr 18 outlier flips β negative.",
@@ -2236,12 +2453,17 @@ with tab7:
             "50% of baseline since Apr 17. July partial return (R ≈ 0.40) collapsed within 10d. "
             "R(120d) = 0.01. Live from PortWatch chokepoint6.",
             "M9 double-counting fix pending: replace 'effective duration = closure + tail' with "
-            "∫[1 - y(t)/b(t)] dt (cumulative import shortfall). Needs USDA PSD + GCC balance sheets.",
+            "∫[1 - y(t)/b(t)] dt (cumulative import shortfall). "
+            "[BLOCKED] USDA PSD API (apps.fas.usda.gov/psdonline/api/v1/) returned HTTP 404 — "
+            "endpoint may require API key or has moved. Try: USDA FAS bulk download portal, "
+            "World Bank Food Balance Sheets, or FAO FAOSTAT food supply data.",
         ],
         "Honest Limitation": [
             "Food dark fraction is upper bound only — proportional attribution, not per-vessel RCS",
             "GFW processed API: AIS/dark counts only; no per-vessel RCS for clutter removal",
-            "Regime labels from documented event dates, not PELT output; single event only",
+            "Penalty choice: pen=0.5 recovers 8/8 with 20 breaks; pen=1.0 gives 13 breaks, 8/8. "
+            "Must apply to crisis subwindow (Feb 28–May 31), not full analysis window. "
+            "See PELT Penalty Sweep table below.",
             "US blockade still active Apr 17 — Iran lifting Iran's restriction ≠ no restriction. "
             "β = +1.92 overstates the combined institutional+discretionary share. "
             "Report as interval: [out-of-sample M7 lower bound (pending), β=+1.92 ceiling].",
@@ -2254,6 +2476,81 @@ with tab7:
         ],
     }
     st.dataframe(pd.DataFrame(status_data), use_container_width=True, height=300)
+
+    # ── PELT Penalty Sweep (P4) ──────────────────────────────────────────────
+    st.divider()
+    st.markdown("### M3 PELT Penalty Sweep — Crisis Subwindow (Feb 28 – May 31)")
+    st.caption(
+        "Applied to crisis subwindow only (93 days, Feb 28–May 31 2026). "
+        "At full analysis window the Feb 28 collapse is the sole dominant break; "
+        "all subsequent sub-events produce no distribution shift at that scale. "
+        "Model: RBF kernel, min_size=2, jump=1.  Tolerance: ±5 days.  "
+        "Source: IMF PortWatch chokepoint6 (live)."
+    )
+    with st.spinner("Running PELT penalty sweep..."):
+        try:
+            sweep_rows, detail_rows = compute_pelt_sweep(transit_df)
+        except Exception as _e:
+            sweep_rows, detail_rows = [], []
+            st.warning(f"PELT unavailable: {_e}")
+
+    if sweep_rows:
+        st.dataframe(pd.DataFrame(sweep_rows), use_container_width=True)
+        st.caption(
+            "**Anticipation lead (P6):** First PELT break = Mar 1, 2026 — 1 day before the "
+            "IRGC closure decree (Mar 2).  A = −1 day vs IRGC reference.  "
+            "Negative A indicates traffic began responding *before* the formal announcement.  "
+            "[PENDING] Comparison vs JWC listed-area revision date and first flag-state "
+            "advisory (week-one reconnaissance items)."
+        )
+
+    if detail_rows:
+        with st.expander("Table 1 — per-event PELT gaps at penalty=0.50"):
+            st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
+            st.caption(
+                "PELT break dates are the last day of the preceding segment (ruptures convention). "
+                "Gap = PELT break date − documented event date (positive = PELT lags event). "
+                "All eight documented crisis dates recovered within ±5 days at pen ≤ 1.0. "
+                "At pen=2.0 only the initial collapse cluster (Feb 28, Mar 2, Mar 26) is recovered."
+            )
+
+    # ── Seasonal baseline sensitivity (P2) ──────────────────────────────────
+    st.divider()
+    st.markdown("### Baseline Sensitivity — Flat Mean vs Seasonal (Eq.2)")
+    with st.expander("Seasonal baseline diagnostic (expand for details)", expanded=False):
+        st.markdown("""
+**Flat baseline (Eq.1):** mean of daily n\_total over pre-crisis window (Oct 1 2025 – Feb 27 2026).
+Computed from live PortWatch data. Gives a single scalar b = 69.75 vessels/day.
+
+**DOW + trend OLS (Eq.2 candidate):** fit on pre-crisis data only.
+Results from live data:
+
+| Component | Estimate |
+|-----------|----------|
+| Intercept | 71.0 vessels/day (at t=Oct 1 2025) |
+| Linear trend | −0.10 vessels/day/day = −37 vessels/year |
+| Tuesday effect | +12.5 relative to Monday |
+| Wednesday effect | +9.2 |
+| Residual σ | 20.1 vessels/day |
+
+The negative daily trend (−0.10/day) extrapolates to b ≈ 39/day by Apr 17, 2026
+— far below the flat mean.  This makes the DOW+trend baseline **unreliable** as a
+projection: it amplifies any trend in the 5-month pre-crisis window into a very large
+forward adjustment.  A positive trend in the same window would produce the opposite bias.
+
+**Decision required (flagged as pending):**
+- Primary analysis uses flat mean (Eq.1) — defensible, unambiguous, reproducible.
+- DOW-only adjustment (remove trend, keep DOW dummies) is a reasonable sensitivity.
+- STL decomposition extrapolation is unreliable (trend blows up beyond the estimation window).
+
+**Impact on key metrics:**
+- R(0) under flat mean = 0.11; under DOW-adjusted (Apr 17 is a Friday) ≈ 0.20
+- July peak R under flat mean = 0.385; under DOW-adjusted ≈ 0.78
+
+**Recommendation:** report flat mean as primary, DOW-only sensitivity in appendix.
+The DOW+trend extrapolation should not be used without explicit stabilization (e.g., cap trend at zero or use HP filter).
+[PENDING: editorial decision on seasonal correction method]
+        """)
 
     st.divider()
 
@@ -2425,7 +2722,7 @@ with tab7:
 - M5 JWC discontinuity — needs JWLA revision dates + BIMCO clause activation (week-one recon)
 - M6 cross-section (vessel-level) — needs HiFleet: flag, ownership, insurer domicile, positions
 - M7 out-of-sample β — needs war risk premium series (Lloyd's List Intelligence, AMIS)
-- M9 exhaustion correction — needs USDA PSD + GCC balance sheets (most important result)
+- M9 exhaustion correction — USDA PSD API returned HTTP 404 (endpoint moved or requires key); try USDA FAS bulk download, World Bank Food Balance Sheets, or FAOSTAT
 - M10 systemic risk mechanism — reframed as market structure argument; needs widened event set
 - M12 movement geometry — needs HiFleet position histories for Hormuz approach box
 - Hormuz 1984–88 — needs Lloyd's/INTERTANKO archive (initiate request week one; long lead time)
