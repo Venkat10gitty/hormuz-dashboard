@@ -523,6 +523,88 @@ def get_prices(start: str, end: str):
     return df, wheat_src, urea_src, urea_err
 
 
+# ── USDA PSD bulk download — wheat balance sheet for GCC countries ────────────
+# Old endpoint (psdonline/api/v1/) is HTTP 404 — that API path was deprecated.
+# New API (OpenData/api/psd/) is live but requires a free API key registered at
+#   https://apps.fas.usda.gov/opendatawebV2/#/  (API_KEY header, not a query param).
+# Bulk CSV is the practical route: no key required, updated monthly, ~2.9 MB.
+#   https://apps.fas.usda.gov/psdonline/downloads/psd_grains_pulses_csv.zip
+# Qatar has zero rows for wheat in PSD (not tracked; USDA only tracks Qatar for
+# barley, corn, rice).  Qatar requires a proxy source (FAOSTAT or national stat).
+
+PSD_GRAINS_URL = (
+    "https://apps.fas.usda.gov/psdonline/downloads/psd_grains_pulses_csv.zip"
+)
+PSD_GCC = ["Bahrain", "Kuwait", "Oman", "Saudi Arabia", "United Arab Emirates"]
+# Qatar deliberately excluded — USDA PSD does not track wheat for Qatar.
+# Attribute IDs for wheat balance sheet:
+PSD_ATTR = {20: "Beginning_Stocks", 57: "Imports", 125: "Dom_Consumption", 176: "Ending_Stocks"}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)   # cache 24 h — PSD updates monthly
+def get_psd_wheat_gcc():
+    """Download USDA PSD grains bulk CSV and return GCC wheat balance sheet.
+
+    Returns:
+        df   – wide-format DataFrame indexed by Country_Name × Market_Year,
+               columns: Beginning_Stocks, Imports, Dom_Consumption, Ending_Stocks
+               (all in 1000 MT, most recent USDA estimate for each marketing year).
+        note – human-readable status string for UI display.
+    """
+    import zipfile, io as _io
+    try:
+        req = urllib.request.Request(
+            PSD_GRAINS_URL,
+            headers={"User-Agent": "Mozilla/5.0", "Accept": "*/*"},
+        )
+        with urllib.request.urlopen(req, timeout=60) as r:
+            raw = r.read()
+    except Exception as e:
+        return None, f"Download failed: {e}"
+
+    try:
+        zf = zipfile.ZipFile(_io.BytesIO(raw))
+        with zf.open(zf.namelist()[0]) as f:
+            df_raw = pd.read_csv(f, encoding="latin-1")
+    except Exception as e:
+        return None, f"Parse failed: {e}"
+
+    # Filter wheat + GCC + 2023+
+    mask = (
+        (df_raw["Commodity_Description"] == "Wheat") &
+        (df_raw["Country_Name"].isin(PSD_GCC)) &
+        (df_raw["Market_Year"] >= 2023) &
+        (df_raw["Attribute_ID"].isin(PSD_ATTR.keys()))
+    )
+    sub = df_raw[mask].copy()
+    if sub.empty:
+        return None, "No GCC wheat data found in PSD download"
+
+    # Keep most-recent USDA revision per country × year × attribute
+    sub["Attr"] = sub["Attribute_ID"].map(PSD_ATTR)
+    latest = (
+        sub.sort_values("Month")
+        .groupby(["Country_Name", "Market_Year", "Attr"])
+        .last()
+        .reset_index()
+    )
+    pivot = latest.pivot_table(
+        index=["Country_Name", "Market_Year"],
+        columns="Attr",
+        values="Value",
+        aggfunc="last",
+    ).reset_index()
+    pivot.columns.name = None
+
+    note = (
+        f"USDA PSD grains bulk CSV · {len(df_raw):,} rows downloaded · "
+        f"GCC wheat rows retained: {len(sub)} · "
+        f"Qatar excluded (not tracked in PSD wheat) · "
+        f"Marketing years: {sorted(sub['Market_Year'].unique().tolist())}"
+    )
+    return pivot, note
+
+
 # ── GFW helpers ───────────────────────────────────────────────────────────────
 
 def _bbox_geojson(bbox):
@@ -2433,7 +2515,7 @@ with tab7:
             "⚠️ Ceiling only",
             "🔲 Data needed",
             "✅ Live",
-            "🔲 USDA PSD API blocked (HTTP 404)",
+            "⚠️ Partial — USDA PSD bulk CSV live (no key), Qatar missing",
         ],
         "Key Finding": [
             "Dry bulk collapse ~81%; evasion concentrated in crude tankers, not food cargo",
@@ -2452,11 +2534,10 @@ with tab7:
             f"τ½ > {(TODAY - IRAN_REOPEN).days} days — CENSORED. Transit has never reached "
             "50% of baseline since Apr 17. July partial return (R ≈ 0.40) collapsed within 10d. "
             "R(120d) = 0.01. Live from PortWatch chokepoint6.",
-            "M9 double-counting fix pending: replace 'effective duration = closure + tail' with "
-            "∫[1 - y(t)/b(t)] dt (cumulative import shortfall). "
-            "[BLOCKED] USDA PSD API (apps.fas.usda.gov/psdonline/api/v1/) returned HTTP 404 — "
-            "endpoint may require API key or has moved. Try: USDA FAS bulk download portal, "
-            "World Bank Food Balance Sheets, or FAO FAOSTAT food supply data.",
+            "M9 double-counting fix: USDA PSD bulk CSV unblocked (grains_pulses_csv.zip, no key). "
+            "GCC wheat balance sheets live for Bahrain, Kuwait, Oman, Saudi Arabia, UAE. "
+            "Qatar has ZERO wheat rows in PSD (USDA does not track Qatar wheat — proxy needed). "
+            "See M9 GCC Wheat Balance Sheet section below.",
         ],
         "Honest Limitation": [
             "Food dark fraction is upper bound only — proportional attribution, not per-vessel RCS",
@@ -2471,8 +2552,9 @@ with tab7:
             "and window must be tight. Listings are anticipated → bias τ toward zero (lower bound).",
             "7-day rolling mean suppresses daily noise but smooths the July partial-return peak. "
             "Exact R values depend on smoothing window choice — report under multiple specs.",
-            "GCC food balance sheets require USDA PSD import path + opening stocks. "
-            "Cumulative shortfall calculation is mechanical once the realized path is assembled.",
+            "Qatar has zero wheat rows in USDA PSD — not tracked. All other GCC countries live. "
+            "PSD marketing year lags calendar year (wheat MY2025 = Jun 2025 – May 2026). "
+            "Cumulative shortfall integral ∫[1−y/b]dt requires realized R(τ) path — available.",
         ],
     }
     st.dataframe(pd.DataFrame(status_data), use_container_width=True, height=300)
@@ -2551,6 +2633,73 @@ forward adjustment.  A positive trend in the same window would produce the oppos
 The DOW+trend extrapolation should not be used without explicit stabilization (e.g., cap trend at zero or use HP filter).
 [PENDING: editorial decision on seasonal correction method]
         """)
+
+    # ── M9 GCC Wheat Balance Sheet (P7) ─────────────────────────────────────
+    st.divider()
+    st.markdown("### M9 — GCC Wheat Balance Sheet (USDA PSD, live)")
+    st.caption(
+        "Source: USDA FAS Production, Supply & Distribution (PSD) bulk CSV — "
+        "no API key required.  Updated monthly.  "
+        "Endpoint: apps.fas.usda.gov/psdonline/downloads/psd_grains_pulses_csv.zip.  "
+        "Note: USDA PSD does not track wheat for Qatar — proxy source needed for Qatar."
+    )
+    with st.spinner("Fetching USDA PSD wheat data..."):
+        psd_df, psd_note = get_psd_wheat_gcc()
+
+    if psd_df is not None:
+        # Show MY2025 (most relevant — crisis starts Feb 28 2026, within MY2025/26 Jun2025–May2026)
+        my2025 = psd_df[psd_df["Market_Year"] == 2025].copy()
+        if not my2025.empty:
+            # Add derived fields
+            for col in ["Beginning_Stocks","Imports","Dom_Consumption","Ending_Stocks"]:
+                if col not in my2025.columns:
+                    my2025[col] = float("nan")
+            my2025["Cons_per_day_MT"] = my2025["Dom_Consumption"] * 1000 / 365
+            my2025["Days_stocks_only"] = (my2025["Beginning_Stocks"] * 1000
+                                          / my2025["Cons_per_day_MT"].replace(0, float("nan")))
+            display_cols = {
+                "Country_Name": "Country",
+                "Beginning_Stocks": "Beg. Stocks\n(1000 MT)",
+                "Imports": "Imports\n(1000 MT/yr)",
+                "Dom_Consumption": "Consumption\n(1000 MT/yr)",
+                "Ending_Stocks": "Ending Stocks\n(1000 MT)",
+                "Days_stocks_only": "Days of supply\n(stocks only)",
+            }
+            disp = my2025[list(display_cols.keys())].copy()
+            disp.columns = list(display_cols.values())
+            st.markdown("**Marketing Year 2025/26** (Jun 2025 – May 2026) — most recent USDA estimate")
+            st.dataframe(disp.set_index("Country"), use_container_width=True)
+
+            st.warning(
+                "⚠️ **Qatar:** Not tracked in USDA PSD wheat (zero rows). "
+                "USDA PSD tracks Qatar for barley, corn, and rice only. "
+                "Qatar wheat data requires: FAOSTAT food supply, World Bank Food Security data, "
+                "or Qatar Ministry of Municipality statistics. [PENDING — proxy source needed]"
+            )
+
+        # Show all years for context
+        with st.expander("All marketing years (2023–2026) by country"):
+            st.dataframe(psd_df, use_container_width=True)
+            st.caption(
+                "Marketing year for wheat typically starts June 1 each year. "
+                "All values in 1000 MT.  Most-recent monthly USDA revision shown."
+            )
+
+        st.caption(psd_note)
+        st.caption(
+            "**API key route (if live queries needed):** The new PSD REST API is at "
+            "apps.fas.usda.gov/OpenData/api/psd/ — endpoints confirmed live, require "
+            "API_KEY header (not a query param, not api.data.gov).  "
+            "Free registration at: https://apps.fas.usda.gov/opendatawebV2/#/  "
+            "Swagger spec: apps.fas.usda.gov/OpenData/swagger/docs/v1"
+        )
+    else:
+        st.error(f"USDA PSD download failed: {psd_note}")
+        st.info(
+            "**API key route:** Register free at https://apps.fas.usda.gov/opendatawebV2/#/  "
+            "Use API_KEY header on requests to apps.fas.usda.gov/OpenData/api/psd/  "
+            "The old psdonline/api/v1/ path is HTTP 404 — that endpoint was deprecated."
+        )
 
     st.divider()
 
@@ -2722,7 +2871,7 @@ The DOW+trend extrapolation should not be used without explicit stabilization (e
 - M5 JWC discontinuity — needs JWLA revision dates + BIMCO clause activation (week-one recon)
 - M6 cross-section (vessel-level) — needs HiFleet: flag, ownership, insurer domicile, positions
 - M7 out-of-sample β — needs war risk premium series (Lloyd's List Intelligence, AMIS)
-- M9 exhaustion correction — USDA PSD API returned HTTP 404 (endpoint moved or requires key); try USDA FAS bulk download, World Bank Food Balance Sheets, or FAOSTAT
+- M9 exhaustion correction — USDA PSD bulk CSV live (no key). Bahrain, Kuwait, Oman, Saudi Arabia, UAE balance sheets fetched. Qatar has zero PSD wheat rows (proxy needed: FAOSTAT or Qatar national statistics)
 - M10 systemic risk mechanism — reframed as market structure argument; needs widened event set
 - M12 movement geometry — needs HiFleet position histories for Hormuz approach box
 - Hormuz 1984–88 — needs Lloyd's/INTERTANKO archive (initiate request week one; long lead time)
