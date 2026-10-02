@@ -3494,42 +3494,71 @@ with tab11:
     if sel["note"]:
         st.info(f"ℹ️ {sel['note']}")
 
-    # ACF sketch — primary vs corrected (when they differ)
-    lags = list(range(0, 21))
-    import math
-    y_primary = [math.exp(-s / max(sel["tau_c"], 0.1)) for s in lags]
-    fig_acf = go.Figure()
-    fig_acf.add_trace(go.Scatter(
-        x=lags, y=y_primary,
-        mode="lines+markers", name=f"Primary (uncorrected) τ_c={sel['tau_c']:.3f}d",
-        line=dict(color="#2D6A4F", width=2),
-        marker=dict(size=5),
-    ))
-    tau_orig = sel.get("tau_c_orig")
-    if tau_orig and abs(tau_orig - sel["tau_c"]) > 0.05:
-        y_orig = [math.exp(-s / max(tau_orig, 0.1)) for s in lags]
+    # Real computed ACF curves — read from acf_arrays.csv (save_acf_arrays.py, 2026-10-02)
+    @st.cache_data(show_spinner=False)
+    def _load_acf_arrays():
+        import os as _os
+        p = _os.path.join(_os.path.dirname(__file__), "acf_arrays.csv")
+        if not _os.path.exists(p):
+            return None
+        return pd.read_csv(p)
+
+    acf_all = _load_acf_arrays()
+
+    if acf_all is not None:
+        acf_unit = acf_all[acf_all["event_id"] == sel_id].copy()
+        # Display lags 0–30 by default (readable window; full range available in slider)
+        max_display = st.slider(
+            "Max lag to display (days)", min_value=10, max_value=int(acf_unit["max_lag"].iloc[0]),
+            value=30, step=5, key="acf_lag_slider"
+        )
+        acf_plot = acf_unit[acf_unit["lag"] <= max_display].copy()
+
+        fig_acf = go.Figure()
+
+        # Primary = C_uncorrected (all units)
         fig_acf.add_trace(go.Scatter(
-            x=lags, y=y_orig,
-            mode="lines", name=f"Corrected (pre-fallback) τ={tau_orig:.3f}d",
-            line=dict(color="#C1121F", width=1.5, dash="dash"),
-            opacity=0.7,
+            x=acf_plot["lag"],
+            y=acf_plot["C_uncorrected"],
+            mode="lines+markers",
+            name=f"Primary (uncorrected) τ_c={sel['tau_c']:.3f}d",
+            line=dict(color="#2D6A4F", width=2),
+            marker=dict(size=4),
+            hovertemplate="Lag %{x}d: C=%{y:.4f}<extra></extra>",
         ))
-    fig_acf.add_hline(y=0, line_dash="dot", line_color="#666", line_width=1)
-    fig_acf.update_layout(
-        template="plotly_white", height=300,
-        title=f"{sel['id']} — Schematic ACF (exponential approx from τ_c)",
-        xaxis_title="Lag s (days)", yaxis_title="C(s) ≈ exp(−s/τ)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
-        yaxis=dict(range=[-0.1, 1.1]),
-        margin=dict(t=60, b=40),
-    )
-    st.plotly_chart(fig_acf, use_container_width=True)
-    st.caption(
-        "Schematic only — exponential approximation from the Sokal τ_c estimate. "
-        "Dashed red = original corrected-ACF τ (before uniform fallback rule). "
-        "Full four-panel diagnostic figures (baseline, deviation series, raw ACF, Sokal window) "
-        "are at /Users/arlanto/Downloads/steps3_4_results/figures/."
-    )
+
+        # Corrected — only where denom_corr > 0 (i.e., not NaN in the CSV)
+        corr_valid = acf_plot.dropna(subset=["C_corrected"])
+        if len(corr_valid) > 1:
+            fig_acf.add_trace(go.Scatter(
+                x=corr_valid["lag"],
+                y=corr_valid["C_corrected"],
+                mode="lines",
+                name=f"Corrected (diagnostic, unstable) τ_orig={sel.get('tau_c_orig', 'N/A')}d",
+                line=dict(color="#C1121F", width=1.5, dash="dash"),
+                opacity=0.65,
+                hovertemplate="Lag %{x}d: C_corr=%{y:.4f}<extra></extra>",
+            ))
+
+        fig_acf.add_hline(y=0, line_dash="dot", line_color="#666", line_width=1)
+        fig_acf.update_layout(
+            template="plotly_white", height=340,
+            title=f"{sel_id} — Empirical ACF C(s) from PortWatch pre-event data",
+            xaxis_title="Lag s (days)", yaxis_title="C(s) = Γ(s)/Γ(0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            yaxis=dict(range=[-0.4, 1.1]),
+            margin=dict(t=60, b=40),
+        )
+        st.plotly_chart(fig_acf, use_container_width=True)
+        st.caption(
+            f"Real computed ACF: C(s) = Γ(s)/Γ(0) at each lag s, computed from "
+            f"{int(acf_unit['max_lag'].iloc[0])+1} lags of the {sel['label']} pre-event deviation series. "
+            "Solid green = primary (uncorrected denominator Γ(0), fallback rule applied). "
+            "Dashed red = corrected denominator Γ(0)−⟨1/b⟩, shown only where denom > 0 (diagnostic). "
+            "Source: acf_arrays.csv — computed by save_acf_arrays.py on 2026-10-02 from live PortWatch API."
+        )
+    else:
+        st.warning("acf_arrays.csv not found in repo — cannot plot real ACF curves.")
 
     st.divider()
     st.markdown("### Full authoritative τ_c table (all 11 units)")
