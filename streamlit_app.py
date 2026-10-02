@@ -3529,7 +3529,8 @@ with tab11:
 
         # Corrected — only where denom_corr > 0 (i.e., not NaN in the CSV)
         corr_valid = acf_plot.dropna(subset=["C_corrected"])
-        if len(corr_valid) > 1:
+        corrected_shown = len(corr_valid) > 1
+        if corrected_shown:
             fig_acf.add_trace(go.Scatter(
                 x=corr_valid["lag"],
                 y=corr_valid["C_corrected"],
@@ -3550,11 +3551,26 @@ with tab11:
             margin=dict(t=60, b=40),
         )
         st.plotly_chart(fig_acf, use_container_width=True)
+
+        # Explain corrected-curve absence inline, right below the chart, when applicable
+        if not corrected_shown:
+            st.info(
+                f"**No corrected curve for {sel_id}:** this unit's signal fraction is "
+                f"{sel['sig_frac']:+.4f} — negative, meaning Γ(0) < ⟨1/b⟩. "
+                "The correction's denominator Γ(0) − ⟨1/b⟩ was never positive at any lag, "
+                "so the Poisson-corrected ACF is undefined here. "
+                "The single green curve is the complete, primary result."
+            )
+        else:
+            st.caption(
+                "Dashed red = Poisson-corrected ACF C(s) = Γ(s)/(Γ(0)−⟨1/b⟩), shown as "
+                "a diagnostic. Signal fraction is positive for this unit but below the 0.50 "
+                "threshold, so the corrected curve is valid but the uncorrected (green) remains primary."
+            )
+
         st.caption(
-            f"Real computed ACF: C(s) = Γ(s)/Γ(0) at each lag s, computed from "
+            f"Real computed ACF: C(s) = Γ(s)/Γ(0) at each lag s, from "
             f"{int(acf_unit['max_lag'].iloc[0])+1} lags of the {sel['label']} pre-event deviation series. "
-            "Solid green = primary (uncorrected denominator Γ(0), fallback rule applied). "
-            "Dashed red = corrected denominator Γ(0)−⟨1/b⟩, shown only where denom > 0 (diagnostic). "
             "Source: acf_arrays.csv — computed by save_acf_arrays.py on 2026-10-02 from live PortWatch API."
         )
     else:
